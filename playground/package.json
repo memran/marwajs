@@ -1,0 +1,17 @@
+{
+  "name": "marwajs-playground",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  },
+  "dependencies": {
+    "@marwajs/core": "file:../packages/core/marwajs-core-0.1.0.tgz"
+  }
+}

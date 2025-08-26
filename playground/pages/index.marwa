@@ -1,0 +1,7 @@
+<template>
+  <div>
+    <h2>Home Page</h2>
+    <p>This page is file-based routed.</p>
+  </div>
+</template>
+<script setup></script>

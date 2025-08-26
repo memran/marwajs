@@ -1,0 +1,9 @@
+<template>
+  <div style="border:1px solid #ddd; padding:8px; border-radius:8px;">
+    <strong>{{ title }}</strong><br/>
+    <small>{{ subtitle }}</small>
+  </div>
+</template>
+<script setup>
+  // props auto-collected; you can access via ctx directly
+</script>
