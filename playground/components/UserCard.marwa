@@ -1,0 +1,12 @@
+<template>
+  <div style="padding:.75rem;border:1px solid #ddd;border-radius:10px;margin:.5rem 0">
+    <strong>UserCard</strong>
+    <div>Name: {{ name }}</div>
+    <div>Age: {{ age }}</div>
+    <button :click="age++">Child Age++</button>
+  </div>
+</template>
+
+<script setup >
+/* props { name, age } are auto-exposed; nothing needed */
+</script>

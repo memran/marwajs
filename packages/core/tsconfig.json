@@ -1,14 +1,15 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "ESNext",
+    "lib": ["ES2022", "DOM"],
+    "module": "ES2022",
     "moduleResolution": "Bundler",
     "declaration": true,
-    "declarationDir": "dist",
     "outDir": "dist",
+    "rootDir": "src",
     "strict": true,
-    "jsx": "preserve",
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "noEmitOnError": true
   },
-  "include": ["src/**/*"]
+  "include": ["src", "playground"]
 }

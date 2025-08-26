@@ -1,0 +1,25 @@
+<template>
+  <div style="padding:12px;border:1px solid #ddd;border-radius:10px;margin-top:10px">
+    <h3 >{{ title }}</h3>
+    <div >
+      <button :click="dec()">−</button>
+      <strong :text="value"></strong>
+      <button :click="inc()">＋</button>
+      <span > Global: {{ globalCount }}</span>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+const value = ref(0);
+const globalCount = inject('globalCount',ref(0));
+
+
+function inc(){
+  value.value++;
+}
+function dec(){
+  value.value--;
+}
+
+</script>

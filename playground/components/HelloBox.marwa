@@ -1,9 +1,16 @@
 <template>
-  <div style="border:1px solid #ddd; padding:8px; border-radius:8px;">
-    <strong>{{ title }}</strong><br/>
-    <small>{{ subtitle }}</small>
+  <div>
+     <h1>Name: {{ name }}</h1>
+    <h2> Age: {{ age }}</h2>
+  
+    <strong>{{ theme }}</strong><br/>
+    <button :click="age++">Make Older</button>
   </div>
 </template>
 <script setup>
-  // props auto-collected; you can access via ctx directly
+  // props are auto-collected; directly available in template
+  let theme = inject('theme');
+  //console.log(props.name);
+  //const childAge = ref(0);
+
 </script>

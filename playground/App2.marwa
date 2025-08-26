@@ -1,0 +1,24 @@
+<template>
+  <section>
+    <h1 :text="title"></h1>
+
+    <p>
+      Hello {{ name }} —
+      <button :click="inc()">Count: {{ count }}</button>
+    </p>
+
+    <!-- Try a lazy child (self-closing is fine; plugin expands it) -->
+    <UserCard :name="name" :age="count" />
+    <p>Below the child: this text must be visible</p>
+     <button :click="dec()">Make Younger: {{ count }}</button>
+  </section>
+</template>
+
+<script setup lang="ts">
+const title = 'Hello Marwa';
+const name = ref('World');
+const count = ref(0);
+function inc(){ count.value++; }
+function dec(){ count.value--; }
+// No imports, no return — plugin handles both
+</script>

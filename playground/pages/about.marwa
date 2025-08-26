@@ -1,7 +1,10 @@
 <template>
-  <div>
-    <h2>About</h2>
-    <p>About MarwaJS.</p>
-  </div>
+<div class="container">
+<div class="card">
+<h2>About</h2>
+<p>MarwaJS is a minimal framework with signals, zero‑config SFCs, and a tiny router.</p>
+</div>
+</div>
 </template>
-<script setup></script>
+<script setup>
+</script>
