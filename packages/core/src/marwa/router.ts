@@ -1,9 +1,6 @@
-// router.plugin.ts — MarwaJS Router plugin with <RouterLink> and <RouterView/>
-// Tiny, dependency-free, production-oriented.
-
-import { definePlugin, type App as PluginApp, type MarwaPlugin } from './plugins';
+// router.plugin.ts — MarwaJS Router (full updated)
+import { definePlugin, type MarwaPlugin, type App as PluginApp } from './plugins';
 import { mountLazyComponent, type AppInstance } from './runtime';
-
 
 type Dict<T = any> = Record<string, T>;
 
@@ -59,7 +56,7 @@ export interface RouterOptions {
   routes: RouteRecord[];
   mode?: 'hash' | 'history';
   base?: string;
-  interceptLinks?: boolean; // optional global <a data-router-link> interception
+  /** Optional custom renderer to decouple from runtime or avoid circular imports. */
   viewRenderer?: (host: HTMLElement, route: RouteLocation, app: PluginApp) => Promise<void> | void;
 }
 
@@ -176,39 +173,27 @@ function stringifyQuery(obj?: Dict<any>): string {
   return parts.length ? '?' + parts.join('&') : '';
 }
 
-/* ===================== Core router ===================== */
-// Module-scope lock to serialize renders
+/* ===================== Router core ===================== */
+// render serialization to avoid races
 let _renderLock: Promise<void> = Promise.resolve();
 
-// Helpers to normalize unmount contracts
 function callUnmount(u: any) {
   try {
     if (!u) return;
     if (typeof u === 'function') return u();
-    if (typeof u.unmount === 'function') return u.unmount();
+    if (u && typeof u.unmount === 'function') return u.unmount();
   } catch (e) {
     console.error('[router] unmount error', e);
   }
 }
-
 function captureUnmountFrom(host: HTMLElement, candidate: any) {
-  // Prefer explicit function
-  if (typeof candidate === 'function') {
-    (host as any)._mwUnmount = candidate;
-    return;
-  }
-  // Or object with .unmount()
+  if (typeof candidate === 'function') { (host as any)._mwUnmount = candidate; return; }
   if (candidate && typeof candidate.unmount === 'function') {
     (host as any)._mwUnmount = candidate.unmount.bind(candidate);
     return;
   }
-  // Or runtime set it on host during mount
   const maybe = (host as any)._unmount;
-  if (typeof maybe === 'function') {
-    (host as any)._mwUnmount = maybe;
-    return;
-  }
-  // Else: noop
+  if (typeof maybe === 'function') { (host as any)._mwUnmount = maybe; return; }
   (host as any)._mwUnmount = undefined;
 }
 
@@ -351,7 +336,8 @@ function createRouterCore(options: RouterOptions, app: PluginApp): Router {
     for (const hook of afterHooks) Promise.resolve(hook(target, prev)).catch(() => {});
   }
 
-  let popHandler: ((e: PopStateEvent) => void) | null = null;
+  let popHandler: ((e: Event) => void) | null = null;
+
   function onPop() {
     const next = resolveFromLocation();
     const prev = state.get();
@@ -379,68 +365,40 @@ function createRouterCore(options: RouterOptions, app: PluginApp): Router {
     mount() {
       if (!popHandler) {
         popHandler = onPop;
-        window.addEventListener('popstate', popHandler);
-        if (mode === 'hash' && !location.hash) history.replaceState(null, '', '#/');
+        if (mode === 'hash') {
+          window.addEventListener('hashchange', popHandler);
+          if (!location.hash) location.replace('#/'); // ensure initial hash
+        } else {
+          window.addEventListener('popstate', popHandler);
+        }
       }
       state.set(resolveFromLocation());
     },
     destroy() {
-      if (popHandler) { window.removeEventListener('popstate', popHandler); popHandler = null; }
+      if (!popHandler) return;
+      if (mode === 'hash') window.removeEventListener('hashchange', popHandler);
+      else window.removeEventListener('popstate', popHandler);
+      popHandler = null;
     },
   };
 
-  /* Optional global link interception (data-router-link) */
-  if (options.interceptLinks) {
-    document.addEventListener('click', (e) => {
-      if (e.defaultPrevented || (e as MouseEvent).button !== 0) return;
-      if ((e as MouseEvent).metaKey || (e as MouseEvent).ctrlKey || (e as MouseEvent).shiftKey || (e as MouseEvent).altKey) return;
-      let el = e.target as HTMLElement | null;
-      while (el && el.tagName !== 'A') el = el.parentElement;
-      if (!el) return;
-      const a = el as HTMLAnchorElement;
-      if (!a.hasAttribute('data-router-link')) return;
-      const href = a.getAttribute('href') || '';
-      if (!href || href.startsWith('http') || href.startsWith('mailto:') || href.startsWith('tel:')) return;
-      e.preventDefault();
-      router.push(href);
-    });
-  }
+  /* -------- Default renderer used by <RouterView/> -------- */
+  const defaultRenderer = async (host: HTMLElement, r: RouteLocation, a: PluginApp) => {
+    _renderLock = _renderLock.then(async () => {
+      // Unmount previous
+      callUnmount((host as any)._mwUnmount);
+      (host as any)._mwUnmount = undefined;
+      host.innerHTML = '';
 
- /* Default renderer used by <RouterView/> */
+      // Matched
+      const leaf = r.matched[r.matched.length - 1]?.record;
+      if (!leaf) { host.textContent = 'Not Found'; return; }
 
-const defaultRenderer = async (host: HTMLElement, r: RouteLocation, a: PluginApp) => {
-  _renderLock = _renderLock.then(async () => {
-    // 0) Unmount previous
-    callUnmount((host as any)._mwUnmount);
-    (host as any)._mwUnmount = undefined;
-    host.innerHTML = '';
+      let comp = leaf.component;
 
-    // 1) Matched record
-    const leaf = r.matched[r.matched.length - 1]?.record;
-    if (!leaf) { host.textContent = 'Not Found'; return; }
-
-    let comp = leaf.component;
-
-    // 2) STRING SFC NAME → runtime mount
-    if (typeof comp === 'string') {
-      const hooksOrFn = await mountLazyComponent(
-        comp,
-        host,
-        a as unknown as AppInstance,
-        {},
-        null
-      );
-      captureUnmountFrom(host, hooksOrFn);
-      return;
-    }
-
-    // 3) LAZY FACTORY → await and decide (may resolve to string, object, etc.)
-    if (typeof comp === 'function') {
-      try {
-        const mod = await comp();
-        comp = mod?.default ?? mod;
-
-        if (typeof comp === 'string') {
+      // STRING SFC id
+      if (typeof comp === 'string') {
+        if (typeof mountLazyComponent === 'function') {
           const hooksOrFn = await mountLazyComponent(
             comp,
             host,
@@ -449,41 +407,61 @@ const defaultRenderer = async (host: HTMLElement, r: RouteLocation, a: PluginApp
             null
           );
           captureUnmountFrom(host, hooksOrFn);
-          return;
+        } else {
+          host.textContent = `Component: ${comp}`;
         }
-      } catch (e) {
-        console.error('[router] lazy component load failed:', e);
-        host.textContent = 'Failed to load component';
         return;
       }
-    }
 
-    // 4) Render contract fallbacks
-    if (comp && typeof (comp as any).render === 'function') {
-      await (comp as any).render(host, a, r);
-      // if component placed its own unmount onto host
-      captureUnmountFrom(host, (host as any)._unmount);
-      return;
-    }
+      // LAZY factory
+      if (typeof comp === 'function') {
+        try {
+          const mod = await comp();
+          comp = mod?.default ?? mod;
+          if (typeof comp === 'string') {
+            if (typeof mountLazyComponent === 'function') {
+              const hooksOrFn = await mountLazyComponent(
+                comp,
+                host,
+                a as unknown as AppInstance,
+                {},
+                null
+              );
+              captureUnmountFrom(host, hooksOrFn);
+            } else {
+              host.textContent = `Component: ${comp}`;
+            }
+            return;
+          }
+        } catch (e) {
+          console.error('[router] lazy component load failed:', e);
+          host.textContent = 'Failed to load component';
+          return;
+        }
+      }
 
-    if (comp instanceof HTMLElement) { host.appendChild(comp); return; }
-    if (typeof comp === 'string') { host.innerHTML = comp; return; }
+      // render() / HTMLElement / string fallbacks
+      if (comp && typeof (comp as any).render === 'function') {
+        await (comp as any).render(host, a, r);
+        captureUnmountFrom(host, (host as any)._unmount);
+        return;
+      }
+      if (comp instanceof HTMLElement) { host.appendChild(comp); return; }
+      if (typeof comp === 'string') { host.innerHTML = comp; return; }
 
-    host.textContent = 'Component';
-  }).catch((e) => console.error('[router] render lock error', e));
+      host.textContent = 'Component';
+    }).catch(err => console.error('[router] render lock error', err));
 
-  await _renderLock;
-};
-
+    await _renderLock;
+  };
 
   router._render = options.viewRenderer || defaultRenderer;
-
   return router;
 }
 
 /* ===================== Public helpers ===================== */
 export function requireAuth(getIsAuthed: () => boolean, redirectTo = '/login'): Middleware {
-  return (to) => { if (!getIsAuthed()) return redirectTo; };
+  return () => { if (!getIsAuthed()) return redirectTo; };
 }
 export function blockGuests(getIsAuthed: () => boolean): NavigationGuard {
   return () => (getIsAuthed() ? undefined : false);
@@ -499,11 +477,19 @@ export function RouterLink(
   const href = typeof props.to === 'string' ? props.to : (props.to as any)?.path ?? '/';
   a.setAttribute('href', href);
 
-  a.addEventListener('click', (e) => {
+  // debounce to avoid double-push races
+  let pending = false;
+  a.addEventListener('click', async (e) => {
     if (e.defaultPrevented || e.button !== 0) return;
     if ((e as MouseEvent).metaKey || (e as MouseEvent).ctrlKey || (e as MouseEvent).shiftKey || (e as MouseEvent).altKey) return;
     e.preventDefault();
-    props.replace ? router.replace(props.to) : router.push(props.to);
+    if (pending) return;
+    pending = true;
+    try {
+      props.replace ? await router.replace(props.to) : await router.push(props.to);
+    } finally {
+      pending = false;
+    }
   });
 
   return a;
@@ -527,7 +513,6 @@ export function RouterView(_props: {}, ctx: { app: PluginApp }) {
 export function RouterPlugin(options: RouterOptions): MarwaPlugin {
   return definePlugin({
     name: 'router',
-
     async setup(app) {
       const router = createRouterCore(options, app);
 
@@ -538,13 +523,10 @@ export function RouterPlugin(options: RouterOptions): MarwaPlugin {
         subscribe: router.subscribe,
       });
 
-      // Expose components for compiler-based resolution (<RouterLink/>, <RouterView/>)
+      // Register components for compiler
       const reg = (app as any)._components || ((app as any)._components = {});
-      // Browser exposes tagName as UPPERCASE; keep both just in case
-      reg['RouterLink'] = RouterLink;
-      reg['ROUTERLINK'] = RouterLink;
-      reg['RouterView'] = RouterView;
-      reg['ROUTERVIEW'] = RouterView;
+      reg['RouterLink'] = RouterLink; reg['ROUTERLINK'] = RouterLink;
+      reg['RouterView'] = RouterView; reg['ROUTERVIEW'] = RouterView;
 
       // Mount router when app initializes
       app.hooks.onInit.on(() => { router.mount(); });

@@ -35,6 +35,7 @@
  
 import { useAppStore } from './stores/app'
 
+
 const useCounter = defineStore('counter', {
   state: () => ({ count: 0 }),
   getters: {

@@ -1,11 +1,10 @@
-// main.ts
+//@ts-ignore
 import { createApp,FormPlugin,RouterPlugin } from '@marwajs/core'; // whatever your app entry is called
 import App from './App.marwa';
 
 const routes = [
-  { path: '/', name: 'home', component: 'Home' }, // string → runtime mount
-  { path: '/about', name: 'about', component: () => import('./components/about.marwa') }, // lazy → await → string → runtime mount
- 
+  { path: '/', component: 'Home' },      // maps to ./components/Home.marwa
+  { path: '/about', component: 'About' } // maps to ./components/About.marwa
 ];
 
 
@@ -17,6 +16,13 @@ await app.use(RouterPlugin({
     base: '/',                 // only for 'history'
     interceptLinks: true,      // global <a data-router-link>
     // Optional: custom renderer if you want full control:
-    // viewRenderer: async (host, route, app) => { ... }
+    // viewRenderer: (host, route) => {
+    //     host.innerHTML = `<h3>${route.path}</h3><small>${Date.now()}</small>`;
+    // }
   }));
 app.mount('#app');
+
+const router = app.inject('router');
+console.log('[check] router.current', router.current);
+console.log('[check] has _render', typeof router._render);
+console.log('[check] app._components', Object.keys((app as any)._components || {}));

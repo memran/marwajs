@@ -10,6 +10,7 @@ export type MarwaPluginOptions = {
   entry?: string;               // default: './App.marwa'
   componentsDirs?: string[];    // default: ['./components']
   strictComponents?: boolean;   // error (true) vs warn (false) when a component file is missing
+  builtins?: string[];          // PascalCase tags NOT treated as SFCs (runtime/plugin-provided)
 };
 
 /* ===========================================================
@@ -19,6 +20,7 @@ export default function marwaSfc(opts: MarwaPluginOptions = {}): Plugin {
   const entry = opts.entry ?? './App.marwa';
   const componentsDirs = opts.componentsDirs ?? ['./components'];
   const strictComponents = !!opts.strictComponents;
+  const BUILTINS = new Set<string>(['RouterLink', 'RouterView', ...(opts.builtins ?? [])]);
 
   return {
     name: 'vite:marwa-sfc',
@@ -37,11 +39,11 @@ export default function marwaSfc(opts: MarwaPluginOptions = {}): Plugin {
         if (!setup) this.warn(makeFrame('No <script setup> block (ok, but you cannot declare state)', code, 1, 1, id));
 
         // Normalize/mark components before further checks
-        let normalizedTpl = tagPascalComponents(tpl!);
+        let normalizedTpl = tagPascalComponents(tpl!, BUILTINS);
 
         // Validate loops & components
         validateForSyntax(this, normalizedTpl, code, id);
-        validateComponentsExistence(this, normalizedTpl, id, componentsDirs, strictComponents);
+        validateComponentsExistence(this, normalizedTpl, id, componentsDirs, strictComponents, BUILTINS);
 
         /* ---------- SCOPED STYLES ---------- */
         const scopedParts = styles.filter(s => s.scoped);
@@ -76,11 +78,9 @@ const {
   defineStore,
   getStore,
   storeRegistry
-
 } = __Marwa;
 `.trim();
 
-        // depth-aware explicit return detection at top-level only
         const top = topLevelOnly(stripLiterals(scriptBodyNoImports));
         const hasExplicitReturn = /^[ \t]*return\s*\{[\s\S]*?\}\s*;?/m.test(top);
         const names = hasExplicitReturn ? [] : collectTopLevelNames(scriptBodyNoImports);
@@ -135,6 +135,7 @@ ${indent(scriptSetup, 4)}
         const appPath = path.resolve(dir, entry);
         const hasApp = fs.existsSync(appPath);
 
+        // IMPORTANT: return the actual component, not the module object
         const loaderInject = `
 import * as __Marwa from '@marwajs/core';
 const { setComponentLoader } = __Marwa;
@@ -143,7 +144,8 @@ const __mwComponentsPulse = import.meta.glob('./components/**/*.pulse');
 setComponentLoader(async (name) => {
   for (const [p, loader] of Object.entries({ ...__mwComponents, ...__mwComponentsPulse })) {
     if (p.endsWith('/' + name + '.marwa') || p.endsWith('/' + name + '.pulse')) {
-      return await (loader as any)();
+      const mod = await (loader as any)();
+      return (mod && (mod.default ?? mod)); // <<< critical: unwrap default
     }
   }
   return undefined;
@@ -220,17 +222,24 @@ function posOf(full: string, snippet: string): { line: number; column: number } 
  * Template transforms + validations
  * =========================================================== */
 
-// Expand self-closing PascalCase tags and tag component usage
-function tagPascalComponents(html: string) {
-  // <UserCard /> -> <UserCard data-mw-comp="UserCard"></UserCard>
+// Expand self-closing PascalCase tags and tag component usage,
+// BUT skip built-ins like RouterLink/RouterView (plugin-provided).
+function tagPascalComponents(html: string, builtins: Set<string>) {
+  // <UserCard /> -> <UserCard data-mw-comp="UserCard"></UserCard> (unless builtin)
   html = html.replace(/<([A-Z][A-Za-z0-9_]*)\b([^>]*)\/>/g, (_m, name, rest) => {
+    if (builtins.has(name)) {
+      return `<${name}${rest ? ' ' + rest.trim() : ''}></${name}>`;
+    }
     const hasMarker = /\bdata-mw-comp=/.test(rest || '');
     const injected = hasMarker ? rest : ` data-mw-comp="${name}"${rest ? ' ' + rest.trim() : ''}`;
     return `<${name}${injected}></${name}>`;
   });
 
-  // <UserCard ...> -> <UserCard data-mw-comp="UserCard" ...>
+  // <UserCard ...> -> <UserCard data-mw-comp="UserCard" ...> (unless builtin)
   html = html.replace(/<([A-Z][A-Za-z0-9_]*)\b([^>]*)>/g, (_m, name, rest) => {
+    if (builtins.has(name)) {
+      return `<${name}${rest ?? ''}>`; // no data-mw-comp for builtins
+    }
     if (rest && /\bdata-mw-comp=/.test(rest)) return `<${name}${rest}>`;
     const injected = rest ? ` data-mw-comp="${name}" ${rest.trim()}` : ` data-mw-comp="${name}"`;
     return `<${name}${injected}>`;
@@ -261,13 +270,14 @@ function validateForSyntax(ctx: PluginContextLike, tpl: string, full: string, id
   }
 }
 
-/** Validate every PascalCase tag has a file under componentsDirs */
+/** Validate PascalCase components exist under componentsDirs — skip builtins */
 function validateComponentsExistence(
   ctx: PluginContextLike,
   tpl: string,
   id: string,
   dirs: string[],
-  strict: boolean
+  strict: boolean,
+  builtins: Set<string>
 ) {
   const used = new Set<string>();
   for (const m of tpl.matchAll(/<([A-Z][A-Za-z0-9_]*)\b/g)) used.add(m[1]);
@@ -277,20 +287,19 @@ function validateComponentsExistence(
   const missing: { name: string; where: { line: number; column: number } }[] = [];
 
   for (const name of used) {
+    if (builtins.has(name)) continue;
     let found = false;
     for (const dirRel of dirs) {
       const dirAbs = path.resolve(fileDir, dirRel);
-      const direct = path.join(dirAbs, `${name}.marwa`);
-      const directPulse = path.join(dirAbs, `${name}.pulse`);
-      if (fs.existsSync(direct) || fs.existsSync(directPulse)) { found = true; break; }
+      const p1 = path.join(dirAbs, `${name}.marwa`);
+      const p2 = path.join(dirAbs, `${name}.pulse`);
+      if (fs.existsSync(p1) || fs.existsSync(p2)) { found = true; break; }
       if (fs.existsSync(dirAbs)) {
-        const sub = fs.readdirSync(dirAbs, { withFileTypes: true });
-        for (const d of sub) {
-          if (d.isDirectory()) {
-            const p1 = path.join(dirAbs, d.name, `${name}.marwa`);
-            const p2 = path.join(dirAbs, d.name, `${name}.pulse`);
-            if (fs.existsSync(p1) || fs.existsSync(p2)) { found = true; break; }
-          }
+        for (const d of fs.readdirSync(dirAbs, { withFileTypes: true })) {
+          if (!d.isDirectory()) continue;
+          const c1 = path.join(dirAbs, d.name, `${name}.marwa`);
+          const c2 = path.join(dirAbs, d.name, `${name}.pulse`);
+          if (fs.existsSync(c1) || fs.existsSync(c2)) { found = true; break; }
         }
       }
       if (found) break;
@@ -352,11 +361,10 @@ function addScopeAttrToHtml(html: string, attrName: string) {
 
 // Append [attr] to last simple selector in a selector
 function scopeOneSelector(sel: string, attrSel: string) {
-  // top-level :global(...) handled in rewrite; keep passthrough for mixed
   sel = sel.replace(/:global\(([^)]+)\)/g, '$1');
   const s = sel.trim();
   if (!s || s.startsWith('@')) return s;
-  if (/^(from|to|\d+%)\s*$/.test(s)) return s; // keyframes steps
+  if (/^(from|to|\d+%)\s*$/.test(s)) return s;
   const lastPseudo = s.lastIndexOf(':');
   if (lastPseudo > -1) {
     return s.slice(0, lastPseudo) + attrSel + s.slice(lastPseudo);
@@ -367,18 +375,14 @@ function scopeOneSelector(sel: string, attrSel: string) {
 // Lightweight CSS rewriter for component-level CSS
 function rewriteCssSelectors(css: string, attrName: string) {
   const attrSel = `[${attrName}]`;
-
-  // unwrap top-level :global(...) entirely
   css = css.replace(/:global\(([^)]+)\)/g, (_, inner) => inner);
-
   const processLine = (line: string) => {
-    if (/^\s*(from|to|\d+%)/.test(line)) return line; // keyframes steps
+    if (/^\s*(from|to|\d+%)/.test(line)) return line;
     return line.replace(/(^|,)([^,{]+)(?=\s*\{)/g, (_m, lead, sel) => {
       const scoped = scopeOneSelector(sel, attrSel);
       return `${lead}${scoped}`;
     });
   };
-
   return css
     .split('\n')
     .map(ln => (ln.includes('{') ? processLine(ln) : ln))
@@ -419,7 +423,6 @@ function collectTopLevelNames(src: string): string[] {
 
 // Hoist top-level imports from <script setup> to module top
 function extractUserImports(script: string) {
-  // Handles single-line and multi-line imports, including "import type" & side-effect imports
   const importRE = /^[ \t]*import(?:[\s\S]*?from\s*['"][^'"]+['"]|[\s\S]*?['"][^'"]+['"])\s*;?/mg;
   const imports: string[] = [];
   let body = script;
