@@ -3,14 +3,18 @@
 Tiny, fast front-end framework with signals, zero-config SFCs, built-in router, DI, and store.
 
 ## Packages
+
 - `@marwajs/core` – core runtime, router, SFC plugin, devtools (dev-only)
 
 ## Quickstart
+
 ```bash
 npm i @marwajs/core
 
 ```
+
 ## Vite config:
+
 ```bash
 //playground/vite.config.ts
 import { defineConfig } from 'vite';
@@ -28,3 +32,10 @@ export default defineConfig({
 
 ```
 
+# MarwaJS
+
+✨ Tiny, fast framework with signals, SFCs, router, DI, and stores.
+
+---
+
+**Made with ❤️ using MarwaJS**

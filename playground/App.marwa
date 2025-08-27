@@ -11,7 +11,7 @@
   <p> Double : {{ double }}</p>
 
   <hr>
-  <Lists/>
+ <!-- <Lists/>-->
   <hr>
 
   <h2>Todo List</h2>
