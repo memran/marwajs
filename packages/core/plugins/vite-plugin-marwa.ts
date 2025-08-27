@@ -23,17 +23,43 @@ function tagPascalComponents(html: string) {
   return html;
 }
 
-// collect top-level identifiers from <script setup> to auto-return
+// 1) strip comments & string literals (keeps line breaks for positions)
+function stripLiterals(src: string): string {
+  return src
+    // block comments
+    .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
+    // line comments
+    .replace(/\/\/[^\n]*/g, m => m.replace(/[^\n]/g, ' '))
+    // strings: ', ", `
+    .replace(/(['"`])(?:\\.|(?!\1)[\s\S])*?\1/g, m => m.replace(/[^\n]/g, ' '));
+}
+
+// 2) keep only text at brace depth 0 (replace nested blocks with spaces)
+function topLevelOnly(src: string): string {
+  let out = '';
+  let depth = 0;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '{') { depth++; out += ' '; continue; }
+    if (ch === '}') { depth = Math.max(0, depth - 1); out += ' '; continue; }
+    out += depth === 0 ? ch : (ch === '\n' ? '\n' : ' ');
+  }
+  return out;
+}
+
+// 3) collect only TOP-LEVEL names (depth 0)
 function collectTopLevelNames(src: string): string[] {
-  const s = src
-    .replace(/\/\/[^\n]*\n/g, '\n')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/(['"`])(?:\\.|(?!\1)[\s\S])*\1/g, '');
+  const s = topLevelOnly(stripLiterals(src));
   const names = new Set<string>();
+
+  // function foo() {}
   for (const m of s.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/g)) names.add(m[1]);
+  // class Foo {}
   for (const m of s.matchAll(/\bclass\s+([A-Za-z_$][\w$]*)\b/g)) names.add(m[1]);
+  // const/let/var foo (=|,|;|newline)
   for (const m of s.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b/g)) names.add(m[1]);
-  // internal/ambient
+
+  // Remove common compiler locals if you happen to use them
   ['props', 'ctx', 'defineProps', 'defineEmits', 'defineExpose'].forEach(n => names.delete(n));
   return Array.from(names);
 }
@@ -72,7 +98,11 @@ const { defineComponent, createApp, provide, inject, ref, reactive, computed, wa
 `;
 
         // auto-return if user didn't
-        const hasExplicitReturn = /\breturn\s*\{[\s\S]*?\}\s*;?/.test(scriptSetupRaw);
+        //const hasExplicitReturn = /\breturn\s*\{[\s\S]*?\}\s*;?/.test(scriptSetupRaw);
+        //const hasExplicitReturn = /^[ \t]*return\s*\{[\s\S]*?\}\s*;?/m.test(scriptSetupRaw);
+        const top = topLevelOnly(stripLiterals(scriptSetupRaw));
+        const hasExplicitReturn = /^[ \t]*return\s*\{[\s\S]*?\}\s*;?/m.test(top);
+
         const names = hasExplicitReturn ? [] : collectTopLevelNames(scriptSetupRaw);
         // compose return: props first (spread), then names
         const autoReturn = hasExplicitReturn

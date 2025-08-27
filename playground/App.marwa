@@ -10,12 +10,17 @@
   <button :click="increment()">Clicked {{ count }}</button>
   <p> Double : {{ double }}</p>
 
+  <hr>
+  <Lists/>
+  <hr>
+
   <h2>Todo List</h2>
+
   <ul>
-    <li :for="todo in todos" :key="todo.id">
-  {{ todo.text }}
-  <button :click="remove(todo.id)">❌</button>
-</li>
+   <li :for="todo in todos" :key="todo.id">
+    {{ todo.text }}
+    <button :click="remove(todo.id)">❌</button>
+  </li>
   </ul>
  <h3> Theme :{{theme}}</h3>
  <button :click="theme = theme === 'dark' ? 'light' : 'dark'">Toggle Theme</button>
@@ -24,7 +29,7 @@
   <HelloBox :name="userName" :age="userAge"/>
   <hr>
 
-<button :click="userAge++">Make Older</button>
+<button :click="userAge--">Make Younger</button>
 <hr>
  <HelloBox :name="userName" :age="userAge"/>
  <hr>
@@ -52,12 +57,10 @@ const double = computed(()=>count.value*2);
 
 let id = 0;
 const todos = ref([
-  { id: ++id, text: 'Learn MarwaJS' },
-  { id: ++id, text: 'Write SFC '+ id },
-  { id: ++id, text: 'Write SFC '+id },
-  { id: ++id, text: 'Write SFC '+id }
+  { id: 1, text: 'Learn' },
+  { id: 2, text: 'Build' },
+  { id: 3, text: 'Ship' }
 ]);
-
 function remove(id) {
   todos.value = todos.value.filter(t => t.id !== id);
 }

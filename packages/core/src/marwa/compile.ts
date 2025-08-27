@@ -1,18 +1,35 @@
-import { effect } from './reactivity';
-import { evaluate, evaluateWithOptions, getByPath, setByPath, toDisplay, Scope } from './eval';
+// src/compile.ts
+
+import { effect, ref } from './reactivity';
+
+import {
+  evaluate,
+  evaluateWithOptions,
+  getByPath,
+  setByPath,
+  toDisplay,
+  Scope
+} from './eval';
 import { mountLazyComponent, AppInstance } from './runtime';
 
 const RE = /\{\{([^}]+)\}\}/g;
 
 export interface MountHooks { unmount(): void; }
 
+/** Mount a string template into an element and wire up reactivity/bindings. */
 export function mountTemplate(rootEl: Element, template: string, scope: Scope): MountHooks {
   const cleanups: Array<() => void> = [];
   rootEl.innerHTML = template;
   for (const n of Array.from(rootEl.childNodes)) compileSubtree(n, scope, cleanups);
-  return { unmount() { cleanups.forEach(fn => fn()); rootEl.innerHTML = ''; } };
+  return {
+    unmount() {
+      cleanups.forEach(fn => fn());
+      rootEl.innerHTML = '';
+    }
+  };
 }
 
+/** Walk and compile a live DOM subtree with a given scope. */
 function compileSubtree(root: Node, scope: Scope, cleanups: Array<() => void>) {
   const walk = (node: Node) => {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -23,28 +40,37 @@ function compileSubtree(root: Node, scope: Scope, cleanups: Array<() => void>) {
     if (node.nodeType === Node.ELEMENT_NODE) {
       const el = node as HTMLElement;
 
-      // Component placeholder (inserted by plugin)
+      // 1) Lazy component placeholder (tagged by the SFC transform)
       const compName = el.getAttribute('data-mw-comp');
       if (compName) {
         const props = collectComponentProps(el, scope);
-        void mountLazyComponent(compName, el, (scope as any).app as AppInstance, props);
-        return; // component owns its subtree
+        const parentInstance = (scope as any).__mwParent; // provided by runtime
+        void mountLazyComponent(
+          compName,
+          el,
+          (scope as any).app as AppInstance,
+          props,
+          parentInstance
+        );
+        return; // component will manage its own subtree
       }
 
-      // :for expands the subtree, so handle first and stop
+      // 2) Lists expand the subtree; handle and stop
       if (el.hasAttribute(':for')) {
         bindFor(el, scope, cleanups);
         return;
       }
 
+      // 3) Normal directives, then recurse
       bindDirectives(el, scope, cleanups);
       for (const child of Array.from(el.childNodes)) walk(child);
     }
   };
+
   walk(root);
 }
 
-/* ---------------- Interpolation ---------------- */
+/* ===================== Interpolation ===================== */
 
 function bindInterpolations(text: Text, scope: Scope, cleanups: Array<() => void>) {
   const raw = text.data;
@@ -66,7 +92,7 @@ function bindInterpolations(text: Text, scope: Scope, cleanups: Array<() => void
   }));
 }
 
-/* ---------------- Directives ---------------- */
+/* ===================== Directives ===================== */
 
 function bindDirectives(el: HTMLElement, scope: Scope, cleanups: Array<() => void>) {
   const specials = new Set([':text', ':html', ':show', ':model']);
@@ -100,15 +126,16 @@ function bindDirectives(el: HTMLElement, scope: Scope, cleanups: Array<() => voi
       continue;
     }
 
+    // Generic ":" — event if element supports on<name>, else attribute binding
     if (name.startsWith(':') && !specials.has(name)) {
-      const token = name.slice(1); // "click", "href", etc.
+      const token = name.slice(1); // "click" | "href" | ...
       const isEvent = ('on' + token) in el;
 
       if (isEvent) {
         const handler = (e: Event) => {
           const local = Object.create(scope);
           (local as any).$event = e;
-          void evaluate(val, local);
+          void evaluate(val, local); // keep proto chain for parent funcs
         };
         el.addEventListener(token, handler);
         cleanups.push(() => el.removeEventListener(token, handler));
@@ -126,10 +153,11 @@ function bindDirectives(el: HTMLElement, scope: Scope, cleanups: Array<() => voi
   }
 }
 
-/* ---------------- :for with keyed diff ---------------- */
+/* ===================== :for (lists) ===================== */
+/* Syntax: :for="item in list"  OR  :for="(item, index) in list"
+   Optional: :key="expr" for keyed ordering/reuse semantics (recreate for now) */
 
 function parseForExpression(expr: string) {
-  // "(item, i) in list" | "item in list"
   const m = expr.match(/^\s*(?:\(\s*([\w$]+)\s*,\s*([\w$]+)\s*\)|([\w$]+))\s+in\s+(.+)\s*$/);
   if (!m) throw new Error(`Invalid :for expression: ${expr}`);
   const itemVar = (m[1] || m[3])!;
@@ -138,7 +166,13 @@ function parseForExpression(expr: string) {
   return { itemVar, indexVar, listExpr };
 }
 
-type ItemRecord = { node: HTMLElement; cleanups: Array<() => void>; key: any };
+type ItemRecord = {
+  node: HTMLElement;
+  cleanups: Array<() => void>;
+  key: any;
+  itemRef: any;   // Ref to current item value
+  indexRef?: any; // Ref to current index
+};
 
 function bindFor(templateEl: HTMLElement, scope: Scope, cleanups: Array<() => void>) {
   const forExpr = templateEl.getAttribute(':for')!;
@@ -153,6 +187,7 @@ function bindFor(templateEl: HTMLElement, scope: Scope, cleanups: Array<() => vo
   parent.removeChild(templateEl);
 
   const { itemVar, indexVar, listExpr } = parseForExpression(forExpr);
+
   let keyToRecord = new Map<any, ItemRecord>();
 
   function disposeRecord(rec: ItemRecord) {
@@ -161,58 +196,78 @@ function bindFor(templateEl: HTMLElement, scope: Scope, cleanups: Array<() => vo
 
   cleanups.push(effect(() => {
     const list: any[] = evaluate(listExpr, scope) ?? [];
-    const newKeyToRecord = new Map<any, ItemRecord>();
 
-    // We'll rebuild the region between anchor and the next non-loop node.
-    // Track insertion point with cursor.
-    let cursor: ChildNode = anchor;
+    // Build desired ordered records (reuse by key if possible)
+    const desired: ItemRecord[] = [];
+    const nextKeyToRecord = new Map<any, ItemRecord>();
 
     for (let i = 0; i < list.length; i++) {
-      const val = list[i];
+      const rawItem = list[i];
 
-      // Child scope with inheritance (so parent funcs are visible)
-      const childScope: Scope = Object.create(scope);
-      (childScope as any)[itemVar] = val;
-      if (indexVar) (childScope as any)[indexVar] = i;
+      // Compute key using a temp child scope (do not mutate existing scopes here)
+      const tempScope: Scope = Object.create(scope);
+      (tempScope as any)[itemVar] = rawItem;
+      if (indexVar) (tempScope as any)[indexVar] = i;
 
-      // Compute key (preserve refs inside key eval if needed)
       const key = keyExpr
-        ? evaluateWithOptions(keyExpr, childScope, { unwrapRefs: true })
-        : (val && typeof val === 'object' ? (val as any) : i);
+        ? evaluateWithOptions(keyExpr, tempScope, { unwrapRefs: true })
+        : (rawItem && typeof rawItem === 'object' ? rawItem : i);
 
-      // Recreate each record (tiny, deterministic)
-      const clone = templateEl.cloneNode(true) as HTMLElement;
-      const recCleanups: Array<() => void> = [];
-      compileSubtree(clone, childScope, recCleanups);
-      const rec: ItemRecord = { node: clone, cleanups: recCleanups, key };
+      let rec = keyToRecord.get(key);
 
-      // Insert after cursor
-      const before = cursor.nextSibling;
-      parent.insertBefore(rec.node, before || null);
-      cursor = rec.node;
+      if (!rec) {
+        // Create new record: build reactive child scope with refs
+        const itemRef = ref(rawItem);
+        const indexRef = indexVar ? ref(i) : undefined;
 
-      newKeyToRecord.set(key, rec);
+        const childScope: Scope = Object.create(scope);
+        (childScope as any)[itemVar] = itemRef;
+        if (indexVar) (childScope as any)[indexVar] = indexRef;
+
+        const node = templateEl.cloneNode(true) as HTMLElement;
+        const recCleanups: Array<() => void> = [];
+        compileSubtree(node, childScope, recCleanups);
+
+        rec = { node, cleanups: recCleanups, key, itemRef, indexRef };
+      } else {
+        // Reuse existing node; just update refs
+        rec.itemRef.value = rawItem;
+        if (rec.indexRef) rec.indexRef.value = i;
+      }
+
+      desired.push(rec);
+      nextKeyToRecord.set(key, rec);
     }
 
-    // Remove any old nodes not present now
+    // DOM reconciliation by order using a single forward pass
+    let cursor: ChildNode = anchor;
+    for (const rec of desired) {
+      const next = cursor.nextSibling;
+      if (rec.node !== next) {
+        parent.insertBefore(rec.node, next || null); // moves or inserts
+      }
+      cursor = rec.node;
+    }
+
+    // Remove old records that no longer exist
     for (const [oldKey, oldRec] of keyToRecord.entries()) {
-      if (!newKeyToRecord.has(oldKey)) {
+      if (!nextKeyToRecord.has(oldKey)) {
         if (oldRec.node.parentNode === parent) parent.removeChild(oldRec.node);
         disposeRecord(oldRec);
       }
     }
 
-    keyToRecord = newKeyToRecord;
+    keyToRecord = nextKeyToRecord;
   }));
-
-  // Stop processing other directives on the template element
-  return;
 }
 
-/* ---------------- :model ---------------- */
+
+
+/* ===================== :model ===================== */
 
 function bindModel(el: HTMLElement, path: string, scope: Scope, cleanups: Array<() => void>) {
   const inputLike = (el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement);
+
   const read = () => {
     if (el instanceof HTMLInputElement && el.type === 'checkbox') return el.checked;
     if (el instanceof HTMLInputElement && el.type === 'radio') return el.value;
@@ -237,18 +292,21 @@ function bindModel(el: HTMLElement, path: string, scope: Scope, cleanups: Array<
   }));
 }
 
-/* ---------------- props collector for components ---------------- */
-
+/* ===================== Component props collector ===================== */
+/** Build props object for a lazy component.
+ *  - `:prop="expr"` → evaluate in current scope, **preserving refs**
+ *  - `prop="literal"` → pass string literal
+ */
 function collectComponentProps(el: HTMLElement, scope: Scope) {
   const props: Record<string, any> = {};
   for (const a of Array.from(el.attributes)) {
-    if (a.name === 'data-mw-comp') continue;
+    if (a.name === 'data-mw-comp') continue; // internal marker
     if (a.name.startsWith(':')) {
       const key = a.name.slice(1);
-      // keep refs intact so child sees reactivity
+      // Keep refs so child receives reactivity by reference.
       props[key] = evaluateWithOptions(a.value.trim(), Object.create(scope), { unwrapRefs: false });
     } else {
-      props[a.name] = a.value; // literal
+      props[a.name] = a.value;
     }
   }
   return props;
