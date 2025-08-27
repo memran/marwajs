@@ -5,8 +5,7 @@ import path from 'path';
 
 /* ===========================================================
  * Options
- * ===========================================================
- */
+ * =========================================================== */
 export type MarwaPluginOptions = {
   entry?: string;               // default: './App.marwa'
   componentsDirs?: string[];    // default: ['./components']
@@ -15,8 +14,7 @@ export type MarwaPluginOptions = {
 
 /* ===========================================================
  * Public plugin
- * ===========================================================
- */
+ * =========================================================== */
 export default function marwaSfc(opts: MarwaPluginOptions = {}): Plugin {
   const entry = opts.entry ?? './App.marwa';
   const componentsDirs = opts.componentsDirs ?? ['./components'];
@@ -57,21 +55,38 @@ export default function marwaSfc(opts: MarwaPluginOptions = {}): Plugin {
           scopedCssJoined = rewriteCssSelectors(rawCss, scopeAttrName);
         }
 
-        /* ---------- auto-imports + auto-return ---------- */
+        /* ---------- <script setup>: hoist user imports ---------- */
         const scriptSetupRaw = setup ?? '';
+        const { imports: userImports, body: scriptBodyNoImports } = extractUserImports(scriptSetupRaw);
+
+        /* ---------- auto-imports + auto-return ---------- */
         const autoImports = `
 import * as __Marwa from '@marwajs/core';
-const { defineComponent, createApp, provide, inject, ref, reactive, computed, watchEffect, effect, setComponentLoader } = __Marwa;
+const {
+  defineComponent,
+  createApp,
+  provide,
+  inject,
+  ref,
+  reactive,
+  computed,
+  watchEffect,
+  effect,
+  setComponentLoader,
+  defineStore,
+  getStore,
+  storeRegistry
+} = __Marwa;
 `.trim();
 
         // depth-aware explicit return detection at top-level only
-        const top = topLevelOnly(stripLiterals(scriptSetupRaw));
+        const top = topLevelOnly(stripLiterals(scriptBodyNoImports));
         const hasExplicitReturn = /^[ \t]*return\s*\{[\s\S]*?\}\s*;?/m.test(top);
-        const names = hasExplicitReturn ? [] : collectTopLevelNames(scriptSetupRaw);
+        const names = hasExplicitReturn ? [] : collectTopLevelNames(scriptBodyNoImports);
         const autoReturn = hasExplicitReturn ? '' : `\nreturn { ...props${names.length ? ', ' + names.join(', ') : ''} };\n`;
 
         const scriptSetup = `
-${(scriptSetupRaw || '').trim()}
+${(scriptBodyNoImports || '').trim()}
 ${autoReturn}
 `.trim();
 
@@ -96,8 +111,10 @@ function __mw_inject_style_once(id, css) {
 
         /* ---------- final module ---------- */
         const out = `
+${userImports}
 ${autoImports}
 ${cssInject}
+
 export default defineComponent({
   template: ${JSON.stringify(normalizedTpl)},
   setup(props, ctx) {
@@ -150,8 +167,7 @@ createApp(App).mount('#app');
 
 /* ===========================================================
  * Diagnostics helpers
- * ===========================================================
- */
+ * =========================================================== */
 function stripWS(s: string) { return s.replace(/\s+/g, ''); }
 
 function matchBlock(src: string, tag: 'template' | 'script'): string | null {
@@ -201,8 +217,7 @@ function posOf(full: string, snippet: string): { line: number; column: number } 
 
 /* ===========================================================
  * Template transforms + validations
- * ===========================================================
- */
+ * =========================================================== */
 
 // Expand self-closing PascalCase tags and tag component usage
 function tagPascalComponents(html: string) {
@@ -295,8 +310,7 @@ function validateComponentsExistence(
 
 /* ===========================================================
  * Scoped styles
- * ===========================================================
- */
+ * =========================================================== */
 
 // djb2 hash → short hex
 function hash(str: string) {
@@ -337,15 +351,11 @@ function addScopeAttrToHtml(html: string, attrName: string) {
 
 // Append [attr] to last simple selector in a selector
 function scopeOneSelector(sel: string, attrSel: string) {
-  // already handled top-level :global, but keep in case of mixed
+  // top-level :global(...) handled in rewrite; keep passthrough for mixed
   sel = sel.replace(/:global\(([^)]+)\)/g, '$1');
-
   const s = sel.trim();
   if (!s || s.startsWith('@')) return s;
-
-  // avoid scoping keyframes steps
-  if (/^(from|to|\d+%)\s*$/.test(s)) return s;
-
+  if (/^(from|to|\d+%)\s*$/.test(s)) return s; // keyframes steps
   const lastPseudo = s.lastIndexOf(':');
   if (lastPseudo > -1) {
     return s.slice(0, lastPseudo) + attrSel + s.slice(lastPseudo);
@@ -361,11 +371,8 @@ function rewriteCssSelectors(css: string, attrName: string) {
   css = css.replace(/:global\(([^)]+)\)/g, (_, inner) => inner);
 
   const processLine = (line: string) => {
-    // skip keyframes steps
-    if (/^\s*(from|to|\d+%)/.test(line)) return line;
-    // split comma selectors
+    if (/^\s*(from|to|\d+%)/.test(line)) return line; // keyframes steps
     return line.replace(/(^|,)([^,{]+)(?=\s*\{)/g, (_m, lead, sel) => {
-      // if already global (we stripped them above), leave as-is
       const scoped = scopeOneSelector(sel, attrSel);
       return `${lead}${scoped}`;
     });
@@ -373,14 +380,13 @@ function rewriteCssSelectors(css: string, attrName: string) {
 
   return css
     .split('\n')
-    .map((ln) => (ln.includes('{') ? processLine(ln) : ln))
+    .map(ln => (ln.includes('{') ? processLine(ln) : ln))
     .join('\n');
 }
 
 /* ===========================================================
- * Auto-return scanners (depth-aware)
- * ===========================================================
- */
+ * <script setup> helpers
+ * =========================================================== */
 
 // strip comments & strings (keep line breaks)
 function stripLiterals(src: string): string {
@@ -410,10 +416,21 @@ function collectTopLevelNames(src: string): string[] {
   return Array.from(names);
 }
 
+// Hoist top-level imports from <script setup> to module top
+function extractUserImports(script: string) {
+  // Handles single-line and multi-line imports, including "import type" & side-effect imports
+  const importRE = /^[ \t]*import(?:[\s\S]*?from\s*['"][^'"]+['"]|[\s\S]*?['"][^'"]+['"])\s*;?/mg;
+  const imports: string[] = [];
+  let body = script;
+  let m: RegExpExecArray | null;
+  while ((m = importRE.exec(script))) imports.push(m[0]);
+  if (imports.length) body = script.replace(importRE, '').trim();
+  return { imports: imports.join('\n'), body };
+}
+
 /* ===========================================================
  * Utils
- * ===========================================================
- */
+ * =========================================================== */
 function indent(s: string, n: number) {
   const pad = ' '.repeat(n);
   return s.split('\n').map(l => (l ? pad + l : l)).join('\n');

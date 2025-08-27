@@ -1,0 +1,142 @@
+<template>
+  <div class="min-h-screen flex flex-col bg-white text-gray-900">
+    <!-- Dev ribbon -->
+    <div class="bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-xs py-1 text-center">
+      MarwaJS • Developer Environment
+    </div>
+
+    <!-- HERO -->
+    <header class="container mx-auto px-4 pt-16 pb-10 text-center">
+      <h1 class="text-4xl font-extrabold tracking-tight sm:text-5xl">
+        Welcome to <span class="text-indigo-600">MarwaJS</span> — build fast, stay happy
+      </h1>
+      <p class="mt-4 text-gray-600 max-w-2xl mx-auto">
+        Tiny core. Single-file components. Signals. Instant feedback. No VDOM overhead.
+      </p>
+
+      <div class="mt-8 flex items-center justify-center gap-3">
+        <button class="btn-primary" :click="cycleQuote()">Inspire me</button>
+        <button class="btn-ghost" :click="toggleTips()">Show tips</button>
+      </div>
+
+      <!-- Motivation -->
+      <figure class="mt-8 max-w-2xl mx-auto">
+        <blockquote class="quote">“{{ currentQuote.text }}”</blockquote>
+        <figcaption class="mt-2 text-sm text-gray-500">— {{ currentQuote.by }}</figcaption>
+      </figure>
+    </header>
+
+    <!-- FEATURES -->
+    <section class="container mx-auto px-4 pb-10">
+      <h2 class="text-xl font-bold tracking-tight text-center">What you get out of the box</h2>
+      <div class="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div :for="f in features" :key="f.title" class="card">
+          <div class="h-9 w-9 grid place-items-center rounded-md bg-indigo-600 text-white mb-3 select-none">
+            {{ f.icon }}
+          </div>
+          <h3 class="font-semibold">{{ f.title }}</h3>
+          <p class="text-sm text-gray-600 mt-1">{{ f.desc }}</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- DX BENEFITS -->
+    <section class="bg-gray-50">
+      <div class="container mx-auto px-4 py-10">
+        <h2 class="text-xl font-bold tracking-tight text-center">Delightful Developer Experience</h2>
+        <div class="mt-6 grid gap-4 sm:grid-cols-2">
+          <div class="card">
+            <h3 class="font-semibold">Flow</h3>
+            <ul class="list">
+              <li :for="l in dx.flow" :key="l">• {{ l }}</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3 class="font-semibold">Confidence</h3>
+            <ul class="list">
+              <li :for="l in dx.conf" :key="l">• {{ l }}</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="mt-6 rounded-2xl border bg-white p-6" :show="showTips">
+          <h3 class="font-semibold">Quick tips</h3>
+          <ul class="list mt-2 text-sm text-gray-700">
+            <li>Use <code>.marwa</code>/<code>.pulse</code> SFCs with <code>&lt;script setup&gt;</code>.</li>
+            <li>Bindings: <code>:text</code>, <code>:html</code>, <code>:show</code>, <code>:model</code>, <code>:click</code>, <code>:for</code>, <code>:key</code>.</li>
+            <li>Lazy components: drop files in <code>/components</code>, use <code>&lt;MyCard /&gt;</code>.</li>
+            <li>Scoped styles: <code>&lt;style scoped&gt;</code> (use <code>:global(...)</code> to opt out).</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer class="mt-auto">
+      <div class="container mx-auto px-4 py-6 text-sm text-gray-600 text-center">
+        Made with ❤️ using MarwaJS — happy shipping!
+      </div>
+    </footer>
+  </div>
+</template>
+
+<script setup>
+/* Quotes */
+const quotes = [
+  { text: 'Small is not a limitation — it’s a superpower.', by: 'MarwaJS' },
+  { text: 'Ship the smallest thing that feels complete.', by: 'MarwaJS' },
+  { text: 'Frictionless DX leads to fearless iteration.', by: 'MarwaJS' },
+  { text: 'Let the code read like the UI you want.', by: 'MarwaJS' }
+];
+const qi = ref(0);
+const currentQuote = computed(() => quotes[qi.value]);
+function cycleQuote() { qi.value = (qi.value + 1) % quotes.length; }
+
+/* Features */
+const features = [
+  { icon: '⚡', title: 'Signals', desc: 'ref/reactive/computed/effect — minimal, fast, and predictable.' },
+  { icon: '🧩', title: 'SFCs', desc: 'Zero-config .marwa/.pulse with <script setup> and scoped CSS.' },
+  { icon: '🌀', title: 'Lazy Components', desc: 'Auto-discover in /components; mounted on demand.' },
+  { icon: '🔑', title: 'Keyed Lists', desc: 'Efficient :for with :key — stable updates on large data.' },
+  { icon: '🛡️', title: 'Scoped Styles', desc: 'Component-local styles with :global(...) opt-outs.' },
+  { icon: '🧠', title: 'DI (provide/inject)', desc: 'Simple app-level context without boilerplate.' }
+];
+
+/* DX benefits */
+const dx = {
+  flow: [
+    'Hot reload with instant feedback',
+    'Auto import of core APIs (no boilerplate)',
+    'Template = DOM, no virtual abstraction'
+  ],
+  conf: [
+    'Build-time diagnostics for SFCs',
+    'Deterministic updates with keys',
+    'Tiny surface area → fewer surprises'
+  ]
+};
+
+/* Tips panel */
+const showTips = ref(false);
+function toggleTips() { showTips.value = !showTips.value; }
+</script>
+
+<style scoped>
+.container { max-width: 1100px; }
+
+.card {
+  @apply rounded-2xl border bg-white p-6;
+}
+.btn-primary {
+  @apply inline-flex items-center justify-center rounded-md bg-black px-5 py-3 text-white font-medium hover:bg-gray-800 transition;
+}
+.btn-ghost {
+  @apply inline-flex items-center justify-center rounded-md border px-4 py-2 font-medium hover:bg-gray-50 transition;
+}
+.quote {
+  @apply text-xl leading-relaxed text-gray-800;
+}
+.list {
+  @apply mt-2 space-y-1 text-sm text-gray-700;
+}
+</style>
