@@ -38,7 +38,7 @@ function assertValidId(id:string) {
       `[marwajs:store] The store id "${id}" is reserved. ` +
       `Please use a different id (e.g. "appState", "settings", "user").`
     )
-  }
+  } 
 }
 
 /**

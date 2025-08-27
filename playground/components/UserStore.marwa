@@ -1,7 +1,7 @@
 <template>
     <div class="p-6 space-y-3 border rounded bg-gray-50 w-max ">
-        <button :click="marwaStore.toggleEnv()" class="border p-2 rounded shadow-sm">Toggle Env</button>
-        <button :click="marwaStore.increment()" class="border p-2 rounded shadow-sm">Increment</button>
+        <button :click="marwaStore.toggleEnv()" class="border p-2 rounded shadow-sm cursor-pointer">Toggle Env</button>
+        <button :click="marwaStore.increment()" class="border p-2 rounded shadow-sm cursor">Increment</button>
     </div>
  
 </template>

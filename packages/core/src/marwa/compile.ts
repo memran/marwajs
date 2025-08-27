@@ -29,6 +29,11 @@ export function mountTemplate(rootEl: Element, template: string, scope: Scope): 
   };
 }
 
+function isComponentTag(tag: string) {
+  // Convention: PascalCase HTML tag = component (e.g., RouterLink, RouterView)
+  return /^[A-Z]/.test(tag);
+}
+
 /** Walk and compile a live DOM subtree with a given scope. */
 function compileSubtree(root: Node, scope: Scope, cleanups: Array<() => void>) {
   const walk = (node: Node) => {
@@ -39,6 +44,39 @@ function compileSubtree(root: Node, scope: Scope, cleanups: Array<() => void>) {
 
     if (node.nodeType === Node.ELEMENT_NODE) {
       const el = node as HTMLElement;
+
+      // 0) Component elements: <RouterLink> / <RouterView /> via app._components
+      const tag = el.tagName; // UPPERCASE
+      if (isComponentTag(tag)) {
+        const app = (scope as any).app as AppInstance;
+        const reg = (app as any)?._components as Record<string, (props:any, ctx:{app:AppInstance}) => HTMLElement>;
+        const name = tag; // e.g., 'ROUTERLINK'
+        const comp = reg?.[name] || reg?.[capitalize(name.toLowerCase())]; // tolerate platform uppercase
+
+        if (comp) {
+          // collect props (supports :prop="expr" and literal)
+          const props = collectComponentProps(el, scope);
+          const children = Array.from(el.childNodes); // keep inner content
+
+          const host = comp(props, { app });
+          // move children into host
+          for (const c of children) host.appendChild(c);
+
+          // swap in DOM
+          el.replaceWith(host);
+
+          // compile children inside component host (interpolations, events, etc.)
+          for (const child of Array.from(host.childNodes)) compileSubtree(child, scope, cleanups);
+
+          // support optional component unmount
+          const maybeUnmount = (host as any)._unmount;
+          if (typeof maybeUnmount === 'function') {
+            cleanups.push(() => { try { maybeUnmount(); } catch(e) { console.error('[mw:unmount]', e); } });
+          }
+          return; // component handled its subtree
+        }
+        // If not registered as component, fall through (treated as normal element)
+      }
 
       // 1) Lazy component placeholder (tagged by the SFC transform)
       const compName = el.getAttribute('data-mw-comp');
@@ -69,6 +107,9 @@ function compileSubtree(root: Node, scope: Scope, cleanups: Array<() => void>) {
 
   walk(root);
 }
+
+// --- tiny helper used above ---
+function capitalize(s: string) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
 /* ===================== Interpolation ===================== */
 

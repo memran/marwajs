@@ -76,6 +76,7 @@ const {
   defineStore,
   getStore,
   storeRegistry
+
 } = __Marwa;
 `.trim();
 

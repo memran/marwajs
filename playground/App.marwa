@@ -6,13 +6,28 @@
     <p>Count: {{ counter.count }} • Double: {{ counter.double }}</p>
 
     <div class="flex gap-2">
-      <button :click="counter.inc()" class="btn">Increment</button>
-      <button :click="counter.dec()" class="btn">Decrement</button>
-      <button :click="counter.add(5)" class="btn">Add +5</button>
-      <button :click="counter.$reset()" class="btn">Reset</button>
+      <button :click="counter.inc()" class="inline-flex items-center justify-center rounded-md border px-4 py-2 hover:bg-gray-50">Increment</button>
+      <button :click="counter.dec()" class="inline-flex items-center justify-center rounded-md border px-4 py-2 hover:bg-gray-50">Decrement</button>
+      <button :click="counter.add(5)" class="inline-flex items-center justify-center rounded-md border px-4 py-2 hover:bg-gray-50">Add +5</button>
+      <button :click="counter.$reset()" class="inline-flex items-center justify-center rounded-md border px-4 py-2 hover:bg-gray-50">Reset</button>
       <hr>
     </div>
      <UserStore />
+     <hr>
+     <UserForm/>
+  </section>
+
+  <section>
+    <nav class="gap-4">
+         <RouterLink to="/">Home</RouterLink>
+         <RouterLink to="/about">About</RouterLink>
+         <RouterLink to="/mini">Mini</RouterLink>
+      </nav>
+
+      <main>
+        <RouterView/>
+      </main>
+
   </section>
 </template>
 
@@ -40,8 +55,12 @@ const counter = useCounter()
 //console.log(app);
 // You can still patch:
 //counter.$patch({ count: 5 })
+
+//const logger = inject('logger')
+//logger.log("This is test");
+
 </script>
 
 <style scoped>
-.btn { @apply rounded border px-3 py-1 hover:bg-gray-50; }
+
 </style>

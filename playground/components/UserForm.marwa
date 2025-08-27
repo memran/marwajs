@@ -1,0 +1,22 @@
+<template>
+  <section>
+        <form :submit="form.formSubmit('Login', onSubmit, $event)">
+            <input placeholder="email" :model="Login.email" />
+            <input placeholder="password" type="password" :model="Login.password" />
+            <button>Sign In</button>
+            <pre>{{ JSON.stringify(Login.values, null, 2) }}</pre>
+        </form>
+    </section>
+</template>
+
+<script setup>
+const form = inject('form')
+
+// Optional: define upfront (or let :useForm auto-create)
+form.defineForm('Login', { email: '', password: '' })
+
+function onSubmit(values, f) {
+  console.log('submit values', values)
+  // e.g. f.reset()
+}
+</script>
