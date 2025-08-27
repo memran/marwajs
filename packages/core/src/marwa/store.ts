@@ -20,6 +20,27 @@ type StoreDef = {
 
 const __stores = new Map<string, any>()
 
+const RESERVED_IDS = new Set([
+  'app',          // collides with createApp()/app context
+  'component',
+  'props',
+  'ctx',
+  'state',
+  'store'
+])
+
+function assertValidId(id:string) {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error(`[marwajs:store] defineStore(id, ...) requires a non-empty string id.`)
+  }
+  if (RESERVED_IDS.has(id)) {
+    throw new Error(
+      `[marwajs:store] The store id "${id}" is reserved. ` +
+      `Please use a different id (e.g. "appState", "settings", "user").`
+    )
+  }
+}
+
 /**
  * create a proxy that exposes:
  * - state props at top-level (count -> state.count)
@@ -96,11 +117,15 @@ function makeStoreObject(id: string, def: StoreDef) {
   return proxy
 }
 
+
+
 /**
  * defineStore('id', { state, getters, actions })
  * returns useStore() that singletons by id
  */
 export function defineStore(id: string, def: StoreDef) {
+  assertValidId(id);
+
   return function useStore() {
     let inst = __stores.get(id)
     if (!inst) {
