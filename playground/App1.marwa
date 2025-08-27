@@ -1,0 +1,72 @@
+<template>
+  <h1 :text="title"></h1>
+  <div :html="rawHtml"></div>
+
+  <p :show="count > 0">Visible when count > 0</p>
+
+  <input :model="name" />
+  <p :show="name">Your name is {{name}}</p>
+
+  <button :click="increment()">Clicked {{ count }}</button>
+  <p> Double : {{ double }}</p>
+
+  <hr>
+ <!-- <Lists/>-->
+  <hr>
+
+  <h2>Todo List</h2>
+
+  <ul>
+   <li :for="todo in todos" :key="todo.id">
+    {{ todo.text }}
+    <button :click="remove(todo.id)">❌</button>
+  </li>
+  </ul>
+ <h3> Theme :{{theme}}</h3>
+ <button :click="theme = theme === 'dark' ? 'light' : 'dark'">Toggle Theme</button>
+ <hr>
+  <p>Age in parent: {{ userAge }}</p>
+  <HelloBox :name="userName" :age="userAge"/>
+  <hr>
+
+<button :click="userAge--">Make Younger</button>
+<hr>
+ <HelloBox :name="userName" :age="userAge"/>
+ <hr>
+ <Counter :title="counterTitle"/>
+ <UserCard :name="userName" :age="userAge"/>
+ 
+</template>
+
+<script setup>
+
+const title = ref('Hello MarwaJS');
+const rawHtml = ref('<b>Raw HTML</b>');
+const counterTitle = ref('My Counter');
+const count = ref(0);
+const name = ref('');
+const theme = ref('light');
+const userName = ref('Emran');
+const userAge = ref(44);
+
+function increment() {
+  count.value++;
+}
+
+const double = computed(()=>count.value*2);
+
+let id = 0;
+const todos = ref([
+  { id: 1, text: 'Learn' },
+  { id: 2, text: 'Build' },
+  { id: 3, text: 'Ship' }
+]);
+function remove(id) {
+  todos.value = todos.value.filter(t => t.id !== id);
+}
+provide('theme', 'dark');
+provide('globalCount', "42");
+
+
+
+</script>

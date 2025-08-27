@@ -10,3 +10,6 @@
 <script setup >
 /* props { name, age } are auto-exposed; nothing needed */
 </script>
+<style scoped>
+  
+</style>
