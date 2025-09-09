@@ -8,4 +8,6 @@
   </nav>
   <p>Welcome to App</p>
   <RouterView/>
+
+  <footer>App.marwa</footer>
 </template>
