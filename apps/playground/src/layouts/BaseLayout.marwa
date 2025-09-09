@@ -1,0 +1,7 @@
+<template>
+  <div class="base">
+    <header><slot name="nav"></slot></header>
+    <main><RouterView/></main>
+    <footer>© Marwa</footer>
+  </div>
+</template>

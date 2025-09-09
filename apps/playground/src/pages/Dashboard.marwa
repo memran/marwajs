@@ -1,0 +1,49 @@
+<template>
+  <section class="card">
+    <h1 :text="title"></h1>
+    <p>Count: {{ count.value }}</p>
+    <p>Double: {{ double.value }}</p>
+    <h2>Welcome: {{ hello.value|uppercase }}</h2>
+    
+    <input :model="count" id="mycount" name="mycount"/>
+    <button @click="inc()">+1</button>
+     <button @click="dec()">-1</button>
+    <button @click="toggle()">Toggle</button>
+
+    <div :show="show">Visible when 'show' is true</div>
+  </section>
+   <div>
+    <RouterLink :to="'/'">Home</RouterLink>
+   </div>
+</template>
+
+<script lang="ts">
+  export const page = definePage({ title: 'Welcome to  MarwaJS' });
+
+  const title = 'Hello MarwaJS';
+  const hello = ref('hEllo World!');
+  const hello1 = ref('hEllo World!');
+  const count = ref(0);
+  const double = computed(()=> 
+  {
+    if(count.value < 0 )
+    {
+        return count.value =100; 
+    }else{
+      return count.value * 2
+    }
+  
+  });
+  function inc(){ count.value++; }
+  function dec(){ count.value--; }
+  const show = ref(true);
+  function toggle(){ show.value = !show.value; }
+
+
+</script>
+
+<style scoped>
+.card { padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
+.card h1 { margin: 0 0 8px; }
+</style>
+

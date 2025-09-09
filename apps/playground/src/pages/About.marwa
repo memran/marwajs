@@ -1,0 +1,29 @@
+<template>
+  <div>
+    <h2>About</h2>
+    <p>Two-way parent/child model demo:</p>
+    <Counter :count="parentCount"/>
+    <p>Parent sees: {{ parentCount.value }}</p>
+  </div>
+ 
+</template>
+
+<script lang="ts">
+  const parentCount = ref(5);
+  export const page = definePage({ title: 'About . MarwaJS' });
+
+  //  export const page = definePage({
+  //   title: 'About Us • MarwaJS',
+  //   meta: { public: true },
+  //   middleware: [
+  //     async ({ to }, next) => { console.log('[page mw]', to); await next(); }
+  //   ],
+  //   guards: [
+  //     (to, from) => true
+  //   ]
+  // });
+</script>
+
+<style scoped>
+h2 { color: #555; }
+</style>

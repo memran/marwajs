@@ -1,0 +1,21 @@
+{
+  "name": "playground",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "routes:inject": "marwa --root . --entry src/main.ts --pages pages --history browser",
+    "routes:watch": "marwa --root . --entry src/main.ts --pages pages --watch",
+    "dev": "vite",
+    "build": "npm run routes:inject && vite build",
+    "preview": "vite preview",
+    "compile": "marwa compile src src/.marwa/out && tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@marwajs/core": "file:../../packages/@marwajs/core",
+    "@marwajs/compiler": "file:../../packages/@marwajs/compiler"
+  },
+  "devDependencies": {
+    "vite": "^5.4.8",
+    "typescript": "^5.6.2"
+  }
+}

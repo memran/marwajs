@@ -1,0 +1,29 @@
+<template>
+  <div class="ctr">
+    From Parent: {{count.value}}
+    <button @click="dec()">-</button>
+    <input :model="count" />
+    <button @click="inc()">+</button>
+     <button @click="count.value++">+1</button>
+  </div>
+
+</template>
+
+<script lang="ts">
+  const { count  } = props;
+  //  import { useModel } from '@marwajs/core';
+
+  // // get a ref-like model bound to parent
+  // const count = useModel<number>('count')
+
+   //const model = ref(0);
+   function inc(){ count.value++; }
+   function dec(){ count.value--; }
+    function plus() {
+    count.value ++; // emits update:count under the hood
+  }
+</script>
+
+<style scoped>
+.ctr { display: inline-flex; gap: 8px; align-items: center; }
+</style>

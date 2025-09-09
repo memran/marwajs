@@ -1,0 +1,10 @@
+<template>
+<button @click="onUpdate()">Toggle</button>
+<p>Child Status: {{ on.value ? 'ON' : 'OFF' }}</p>
+</template>
+<script lang="ts">
+  const { on } = props;
+  function onUpdate(){
+    emit('toggle', !on.value);
+  }
+</script>
