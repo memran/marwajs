@@ -34,3 +34,15 @@ export {
   bindFor, // NEW: keyed list helper for :for
   type Block,
 } from "./runtime/list";
+
+// Router MVP
+export {
+  createRouter,
+  defineRoutes,
+  RouterView,
+  RouterLink,
+  useRoute,
+  type Router,
+  type RouteRecord,
+  type RouteMatch,
+} from "./router";
