@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>MarwaJS Core Reactivity Demo</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "@marwajs/core": "../../packages/@marwajs/core/dist/index.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <h1>Check console</h1>
+    <script type="module">
+      import { ref, reactive, computed, effect, nextTick } from "@marwajs/core";
+
+      const n = ref(1);
+      const s = reactive({ a: 2 });
+      const c = computed(() => n.value + s.a);
+
+      effect(() => {
+        console.log("computed =", c.value);
+      });
+
+      n.value = 5;
+      s.a = 3;
+      await nextTick();
+      console.log("Done.");
+    </script>
+  </body>
+</html>

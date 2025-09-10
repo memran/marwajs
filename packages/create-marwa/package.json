@@ -1,0 +1,18 @@
+{
+  "name": "create-marwa",
+  "version": "0.0.1",
+  "type": "module",
+  "bin": {
+    "create-marwa": "bin/index.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "@types/node": "^22.0.0"
+  }
+}

@@ -1,20 +1,14 @@
 {
-  "name": "marwajs-monorepo",
+  "name": "marwajs",
   "private": true,
-  "workspaces": [
-    "packages/*",
-    "packages/*/*",
-    "apps/*"
-  ],
+  "type": "module",
+  "packageManager": "pnpm@10.15.0",
   "scripts": {
-    "build": "npm -w @marwajs/core run build && npm -w @marwajs/compiler run build",
-    "dev": "npm -w playground run dev",
-    "lint": "echo \"(add eslint later)\"",
-    "clean": "rimraf node_modules packages/*/node_modules apps/*/node_modules packages/*/dist apps/*/dist"
+    "build": "pnpm -r --filter @marwajs/* run build",
+    "test": "pnpm -r --filter @marwajs/* run test"
   },
   "devDependencies": {
-    "@types/node": "^24.3.0",
-    "rimraf": "^6.0.1",
-    "typescript": "^5.9.2"
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
   }
 }

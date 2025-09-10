@@ -1,17 +1,26 @@
 {
   "name": "@marwajs/core",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "type": "module",
-  "module": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "sideEffects": false,
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
-  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "happy-dom": "^14.12.3",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
   }
 }

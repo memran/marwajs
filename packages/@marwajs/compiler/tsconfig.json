@@ -1,12 +1,9 @@
 {
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
-    "outDir": "dist",
     "rootDir": "src",
-    "resolveJsonModule": true,
-
-    "lib": ["ES2022"], // Node-side; no DOM types needed here
-    "types": ["node"] // Ensure Node globals (fs, path) are typed
+    "outDir": "dist",
+    "types": ["node"]
   },
   "include": ["src"]
 }
