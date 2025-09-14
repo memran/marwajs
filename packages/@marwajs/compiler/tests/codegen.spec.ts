@@ -104,7 +104,7 @@ describe("codegen → ESM component", () => {
 <template>
   <div>
     <h1>Count: {{ count() }}</h1>
-    <button @click="count.set(count() + 1)">inc</button>
+    <button @click.prevent="count.set(count() + 1)">inc</button>
   </div>
 </template>
 <script lang="ts">

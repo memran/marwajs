@@ -134,7 +134,8 @@ export function compileTemplateToIR(
 // --- minimal HTML tokenizer (keeps meaningful spaces) ---
 function parseHTML(src: string): Node[] {
   const re = /<\/?([A-Za-z][\w-]*)([^>]*)>|([^<]+)/g;
-  const attrRe = /([:@\w-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>=]+)))?/g;
+  //const attrRe = /([:@\w-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>=]+)))?/g;
+  const attrRe = /([:@.\w-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>=]+)))?/g;
   const stack: Node[] = [];
   const roots: Node[] = [];
 

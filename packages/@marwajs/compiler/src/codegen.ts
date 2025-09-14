@@ -1,49 +1,37 @@
 import type { ComponentIR, Binding } from "./ir";
 
-const RUNTIME_IMPORTS = [
-  // core
+// Keep this minimal; we’ll add selectively based on bindings
+const BASE_IMPORTS = new Set([
   "defineComponent",
-  "effect",
-  "stop",
-  // dom & directives
-  "Dom",
-  "bindText",
-  "bindHTML",
-  "bindShow",
-  "bindClass",
-  "bindStyle",
-  "bindModel",
-  "onEvent",
-  "withModifiers",
-  "bindFor",
-];
+  // dom + directives will be added as needed
+]);
 
 export function generateComponent(
-  ir: ComponentIR & {
-    /** optional extra runtime imports (e.g., 'signal') */
-    imports?: string[];
-    /** optional prelude lines emitted inside setup() before create/mount */
-    prelude?: string[];
-  }
-): { code: string } {
-  const used = new Set(RUNTIME_IMPORTS);
-  for (const b of ir.bindings) {
-    collectRuntimeForBinding(b, used);
-  }
+  ir: ComponentIR & { imports?: string[]; prelude?: string[] }
+) {
+  const used = new Set<string>(BASE_IMPORTS);
+
+  // Always import Dom namespace (compiler targets it)
+  used.add("Dom");
+
+  // Add extras requested explicitly
   for (const extra of ir.imports ?? []) used.add(extra);
 
-  //   const importList = Array.from(used)
-  //     .filter(x => x !== 'Dom')
-  //     .sort()
-  //     .join(', ');
+  // Collect imports by binding usage
+  for (const b of ir.bindings) {
+    collectRuntimeForBinding(b, used);
+    // If handler string uses withModifiers(...), make sure we import it
+    if (b.kind === "event" && /\bwithModifiers\s*\(/.test(b.handler)) {
+      used.add("withModifiers");
+    }
+  }
 
-  const importList = Array.from(used)
-    .filter((x) => x !== "Dom")
-    .sort()
-    .join(", ");
+  // Build the import statement (Dom is a named export from core)
+  const importList = Array.from(used).sort().join(", ");
 
   const code = `
-import { ${importList}, Dom } from '@marwajs/core';
+import { ${importList} } from '@marwajs/core';
+
 export default defineComponent((props, ctx) => {
   const __stops = [];
 
@@ -92,17 +80,15 @@ function collectRuntimeForBinding(b: Binding, used: Set<string>) {
     case "style":
       used.add("bindStyle");
       break;
-    case "event":
-      used.add("onEvent");
-      break;
     case "model":
       used.add("bindModel");
       break;
-    case "for":
-      used.add("bindFor");
-      break; // future
+    case "event":
+      used.add("onEvent");
+      break;
+    // add others (e.g., 'for') as you implement them
   }
-  used.add("defineComponent");
+  // Dom is already included above
 }
 
 function emitBinding(b: Binding): string {
@@ -117,18 +103,17 @@ function emitBinding(b: Binding): string {
       return `__stops.push(bindClass(${b.target}, () => (${b.expr})));`;
     case "style":
       return `__stops.push(bindStyle(${b.target}, () => (${b.expr})));`;
+    case "model": {
+      const opts = b.options ? JSON.stringify(b.options) : "{}";
+      const setter = b.set?.replace(/\$_/g, "v") ?? "v => {}";
+      return `__stops.push(bindModel(ctx.app, ${b.target}, () => (${b.get}), (v) => (${setter}), ${opts}));`;
+    }
     case "event":
       return `__stops.push(onEvent(ctx.app, ${b.target}, ${JSON.stringify(
         b.type
       )}, ${b.handler}));`;
-    case "model": {
-      const opts = b.options ? JSON.stringify(b.options) : "{}";
-      const setter = b.set?.replace(/\$_/g, "v") ?? "v => {}";
-      return `__stops.push(bindModel(ctx.app, ${b.target}, () => (${b.get}), (v) => (${setter}), ${opts} ));`;
-    }
-    default:
-      return `/* unknown binding */`;
   }
+  return "";
 }
 
 function joinLines(lines?: string[]) {
