@@ -4,6 +4,7 @@ import * as Dom from "./dom";
 
 /** :text */
 export function bindText(target: Node, compute: () => any): () => void {
+  Dom.setText(target, toStringSafe(compute())); // eager first write
   const runner = effect(() => {
     Dom.setText(target, toStringSafe(compute()));
   });
@@ -60,6 +61,10 @@ export function on(
   type: string,
   handler: (e: Event) => void
 ): () => void {
+  if (!("isConnected" in app.container) || !app.container.isConnected) {
+    el.addEventListener(type, handler);
+    return () => el.removeEventListener(type, handler);
+  }
   return app.on(type, el, handler);
 }
 

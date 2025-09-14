@@ -46,6 +46,13 @@ export interface ModelBinding {
   set: string; // setter expr (value param is '$_')
   options?: { lazy?: boolean; trim?: boolean; number?: boolean; type?: string };
 }
+export interface ForBinding {
+  kind: "for";
+  parent: string; // parent var name (Element or Anchor parent)
+  listExpr: string; // JS expr returns array
+  keyExpr: string; // (item, index) => key, emitted inline as function
+  factory: string; // function (item, index) => Block
+}
 
 export type Binding =
   | TextBinding
@@ -54,7 +61,8 @@ export type Binding =
   | ClassBinding
   | StyleBinding
   | EventBinding
-  | ModelBinding;
+  | ModelBinding
+  | ForBinding;
 
 export interface ComponentIR {
   file: string;
@@ -64,12 +72,4 @@ export interface ComponentIR {
   mount: string[]; // lines of JS to insert nodes
   bindings: Binding[]; // runtime reactive bindings (calls to directive helpers)
   destroy?: string[]; // optional cleanup
-}
-
-export interface ForBinding {
-  kind: "for";
-  parent: string; // parent var name (Element or Anchor parent)
-  listExpr: string; // JS expr returns array
-  keyExpr: string; // (item, index) => key, emitted inline as function
-  factory: string; // function (item, index) => Block
 }

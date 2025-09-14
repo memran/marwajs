@@ -3,7 +3,12 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "types": ["node"]
+    "module": "ES2020",
+    "moduleResolution": "Bundler",
+    "types": ["node", "vitest/globals"],
+    "paths": {
+      "@marwajs/core": ["../../@marwajs/core/src"]
+    }
   },
   "include": ["src"]
 }
