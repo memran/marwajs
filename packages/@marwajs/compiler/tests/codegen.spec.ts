@@ -124,6 +124,11 @@ describe("codegen → ESM component", () => {
     const inst = Comp({}, { app });
     inst.mount(host);
     await nextTick();
+    const styleTags = Array.from(document.head.querySelectorAll("style"));
+    const hasScoped = styleTags.some((s) =>
+      s.textContent?.includes("[data-mw-")
+    );
+    expect(hasScoped).toBe(true);
 
     expect(host.textContent).toContain("Count: 0");
 

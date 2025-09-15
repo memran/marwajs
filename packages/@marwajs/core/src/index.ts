@@ -17,6 +17,7 @@ export {
   type ComponentHooks,
   type ComponentContext,
 } from "./runtime/component";
+export { bindIf } from "./runtime/if";
 export { createApp, type App } from "./runtime/app";
 export * as Dom from "./runtime/dom";
 export {
