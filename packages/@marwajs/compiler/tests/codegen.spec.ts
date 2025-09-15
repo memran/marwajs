@@ -75,6 +75,55 @@ async function evalCompiled(code: string) {
   return factory(runtime);
 }
 
+it("handles :attr, key mods, and m-model modifiers", async () => {
+  const sfc = `
+<template>
+  <div>
+    <input :id="\`inp-\${n()}\`" m-model.number="n" />
+    <p :text="\`n=\${n()}\`"></p>
+    <button @keyup.enter.prevent="n.set(n() + 1)">+1 (enter)</button>
+  </div>
+</template>
+<script lang="ts">
+  import { signal } from '@marwajs/core'
+  const n = signal(0)
+</script>`;
+  const { code } = compileSFC(sfc, "/virtual/Mods.marwa");
+  const Comp = await evalCompiled(code);
+
+  const host = document.createElement("div");
+  const app = createApp(host);
+  const inst = Comp({}, { app });
+  inst.mount(host);
+  await nextTick();
+
+  const input = host.querySelector("input")!;
+  const btn = host.querySelector("button")!;
+  const para = host.querySelector("p")!;
+
+  expect(input.id).toBe("inp-0");
+  expect(para.textContent).toBe("n=0");
+
+  // Simulate typing "41" (number modifier will coerce)
+  (input as HTMLInputElement).value = "41";
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  await nextTick();
+  expect(para.textContent).toBe("n=41");
+
+  // Keyup enter triggers +1 (with prevent)
+  btn.dispatchEvent(
+    new KeyboardEvent("keyup", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    })
+  );
+  await nextTick();
+  expect(para.textContent).toBe("n=42");
+
+  inst.destroy();
+});
+
 describe("codegen → ESM component", () => {
   it("compiles and runs the hello IR", async () => {
     const { code } = generateComponent(helloIR);

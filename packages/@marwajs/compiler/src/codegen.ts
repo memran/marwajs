@@ -83,12 +83,19 @@ function collectRuntimeForBinding(b: Binding, used: Set<string>) {
     case "model":
       used.add("bindModel");
       break;
+    case "attr":
+      used.add("bindAttr");
+      break; // <— NEW
     case "event":
       used.add("onEvent");
       break;
-    // add others (e.g., 'for') as you implement them
   }
-  // Dom is already included above
+  // Pull withModifiers if the handler string uses it
+  if (b.kind === "event" && /\bwithModifiers\s*\(/.test(b.handler)) {
+    used.add("withModifiers");
+  }
+  used.add("Dom"); // compiler targets Dom
+  used.add("defineComponent");
 }
 
 function emitBinding(b: Binding): string {
@@ -103,6 +110,10 @@ function emitBinding(b: Binding): string {
       return `__stops.push(bindClass(${b.target}, () => (${b.expr})));`;
     case "style":
       return `__stops.push(bindStyle(${b.target}, () => (${b.expr})));`;
+    case "attr":
+      return `__stops.push(bindAttr(${b.target}, ${JSON.stringify(
+        b.name
+      )}, () => (${b.expr})));`; // <— NEW
     case "model": {
       const opts = b.options ? JSON.stringify(b.options) : "{}";
       const setter = b.set?.replace(/\$_/g, "v") ?? "v => {}";

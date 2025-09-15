@@ -4,6 +4,31 @@ type Node =
   | { type: "el"; tag: string; attrs: Record<string, string>; children: Node[] }
   | { type: "text"; value: string };
 
+// Behavior modifiers we pass through to withModifiers
+const BEHAVIOR_MODS = new Set<string>([
+  "stop",
+  "prevent",
+  "self",
+  "once",
+  "capture",
+  "passive",
+]);
+
+// Map key modifiers to DOM e.key values
+const KEY_MODS: Record<string, string[]> = {
+  enter: ["Enter"],
+  esc: ["Escape"],
+  escape: ["Escape"],
+  space: [" ", "Spacebar"],
+  tab: ["Tab"],
+  up: ["ArrowUp"],
+  down: ["ArrowDown"],
+  left: ["ArrowLeft"],
+  right: ["ArrowRight"],
+  delete: ["Delete"],
+  backspace: ["Backspace"],
+};
+
 export function compileTemplateToIR(
   html: string,
   { file, name, scopeAttr }: { file: string; name: string; scopeAttr?: string }
@@ -60,49 +85,97 @@ export function compileTemplateToIR(
     const attrs = n.attrs || {};
     for (const k in attrs) {
       const v = attrs[k];
+
       if (k === ":text") {
         const tn = vid("t");
         create.push(`const ${tn} = Dom.createText('');`);
         mount.push(`Dom.insert(${tn}, ${el});`);
         bindings.push({ kind: "text", target: tn, expr: v });
-      } else if (k === ":class") {
+        continue;
+      }
+
+      if (k === ":class") {
         bindings.push({ kind: "class", target: el, expr: v });
-      } else if (k === ":style") {
+        continue;
+      }
+
+      if (k === ":style") {
         bindings.push({ kind: "style", target: el, expr: v });
-      } else if (k === ":show") {
+        continue;
+      }
+
+      if (k === ":show") {
         bindings.push({ kind: "show", target: el, expr: v });
-      } else if (k === "m-model") {
+        continue;
+      }
+
+      // m-model with modifiers: m-model.number.trim.lazy="expr"
+      if (k.startsWith("m-model")) {
+        const [, ...mods] = k.split(".");
+        const opts: any = {};
+        if (mods.includes("number")) opts.number = true;
+        if (mods.includes("trim")) opts.trim = true;
+        if (mods.includes("lazy")) opts.lazy = true;
+
+        // Signals-first: support signal `foo` and ref `bar.value` interop
+        const model = v.trim();
+        const isRef = /\.value$/.test(model);
+        const getExpr = isRef ? model : `${model}()`; // ref.value | signal()
+        const setExpr = isRef ? `${model} = $_` : `${model}.set($_)`; // assign   | signal.set(v)
+
         bindings.push({
           kind: "model",
           target: el,
-          get: v,
-          set: "$_",
-          options: {},
+          get: getExpr,
+          set: setExpr,
+          options: opts,
         });
-      } else if (k.startsWith("@")) {
-        // Support modifiers: @click.prevent.stop
-        const raw = k.slice(1);
-        const [type, ...mods] = raw.split(".");
-        const handler = `(e)=>{ ${v} }`;
-        if (mods.length) {
-          const arr = `[${mods.map((m) => `'${m}'`).join(",")}]`;
-          bindings.push({
-            kind: "event",
-            target: el,
-            type,
-            handler: `withModifiers(${handler}, ${arr})`,
-          });
-        } else {
-          bindings.push({ kind: "event", target: el, type, handler });
-        }
-      } else {
-        // static attr
-        create.push(
-          `Dom.setAttr(${el}, ${JSON.stringify(k)}, ${JSON.stringify(v)});`
-        );
+        continue;
       }
+
+      // @event with modifiers, e.g. @keyup.enter.prevent
+      if (k.startsWith("@")) {
+        const raw = k.slice(1); // e.g. "click.prevent.stop" or "keyup.enter"
+        const parts = raw.split(".");
+        const type = parts.shift()!; // "click" | "keyup" | ...
+        const behaviorMods = parts.filter((m) => BEHAVIOR_MODS.has(m));
+        const keyMods = parts.filter((m) =>
+          Object.prototype.hasOwnProperty.call(KEY_MODS, m)
+        );
+
+        let handler = `(e)=>{ ${v} }`;
+
+        if (keyMods.length) {
+          const condKeys = keyMods.map((km) => KEY_MODS[km]).flat();
+          handler = `(e)=>{ if (!(${JSON.stringify(
+            condKeys
+          )}.includes(e.key))) return; ${v} }`;
+        }
+
+        if (behaviorMods.length) {
+          handler = `withModifiers(${handler}, [${behaviorMods
+            .map((m) => `'${m}'`)
+            .join(",")}])`;
+        }
+
+        bindings.push({ kind: "event", target: el, type, handler });
+        continue;
+      }
+
+      // General dynamic attributes: :id, :src, :data-x, :aria-label, ...
+      if (k.startsWith(":")) {
+        const name = k.slice(1);
+        bindings.push({ kind: "attr", target: el, name, expr: v });
+        continue;
+      }
+
+      // static attr
+      create.push(
+        `Dom.setAttr(${el}, ${JSON.stringify(k)}, ${JSON.stringify(v)});`
+      );
     }
 
+    // children
     for (const c of n.children) {
       const childVar = walk(c, el);
       if (c.type === "el") {
@@ -134,7 +207,6 @@ export function compileTemplateToIR(
 // --- minimal HTML tokenizer (keeps meaningful spaces) ---
 function parseHTML(src: string): Node[] {
   const re = /<\/?([A-Za-z][\w-]*)([^>]*)>|([^<]+)/g;
-  //const attrRe = /([:@\w-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>=]+)))?/g;
   const attrRe = /([:@.\w-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>=]+)))?/g;
   const stack: Node[] = [];
   const roots: Node[] = [];

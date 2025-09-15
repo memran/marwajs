@@ -27,6 +27,7 @@ export {
   bindClass,
   bindStyle,
   bindModel,
+  bindAttr,
   on as onEvent,
   withModifiers,
   type ModelOptions,

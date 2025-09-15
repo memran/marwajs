@@ -54,6 +54,13 @@ export interface ForBinding {
   factory: string; // function (item, index) => Block
 }
 
+export interface AttrBinding {
+  kind: "attr";
+  target: string;
+  name: string; // attribute name, e.g. 'id', 'src', 'aria-label'
+  expr: string; // expression producing value
+}
+
 export type Binding =
   | TextBinding
   | HTMLBinding
@@ -62,7 +69,8 @@ export type Binding =
   | StyleBinding
   | EventBinding
   | ModelBinding
-  | ForBinding;
+  | ForBinding
+  | AttrBinding;
 
 export interface ComponentIR {
   file: string;

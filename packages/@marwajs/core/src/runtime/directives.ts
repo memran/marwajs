@@ -10,6 +10,20 @@ export function bindText(target: Node, compute: () => any): () => void {
   });
   return () => stop(runner);
 }
+/** :attr (generic attribute binding, e.g. :id, :src, :aria-label) */
+
+export function bindAttr(
+  el: HTMLElement,
+  name: string,
+  compute: () => unknown
+): () => void {
+  // eager first write for deterministic content
+  Dom.setAttr(el, name, compute() as any);
+  const runner = effect(() => {
+    Dom.setAttr(el, name, compute() as any);
+  });
+  return () => stop(runner);
+}
 
 /** :html */
 export function bindHTML(
