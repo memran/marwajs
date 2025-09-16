@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/*/*"
+    "packages/*",
+    "packages/@*/*"
   ],
   "scripts": {
     "build": "npm run -w @marwajs/core build && npm run -w @marwajs/compiler build",
