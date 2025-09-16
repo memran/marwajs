@@ -1,14 +1,13 @@
 {
-  "name": "marwajs",
+  "name": "marwajs-monorepo",
+  "description": "MarwaJS monorepo",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.15.0",
+  "workspaces": [
+    "packages/**"
+  ],
   "scripts": {
-    "build": "pnpm -r --filter @marwajs/* run build",
-    "test": "pnpm -r --filter @marwajs/* run test"
-  },
-  "devDependencies": {
-    "typescript": "^5.5.4",
-    "vitest": "^2.0.5"
+    "build": "npm run -w @marwajs/core build && npm run -w @marwajs/compiler build",
+    "test": "npm run -w @marwajs/core test && npm run -w @marwajs/compiler test"
   }
 }

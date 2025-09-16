@@ -37,6 +37,7 @@ export function compileTemplateToIR(
   const create: string[] = [];
   const mount: string[] = [];
   const bindings: Binding[] = [];
+  const extraImports = new Set<string>(); // <- to request runtime imports (e.g. bindIf)
 
   let id = 0;
   const vid = (p: string) => `_${p}${++id}`;
@@ -56,14 +57,264 @@ export function compileTemplateToIR(
     const tail = raw.slice(last);
     if (!parts.length && !tail) return null; // no dynamic
     if (tail) parts.push(tail.replace(/`/g, "\\`"));
-    // If there were no {{}} but we had raw, return null (static text node will be used)
     if (parts.length === 1 && !/\$\{/.test(parts[0])) return null;
     return "`" + parts.join("") + "`";
   }
 
-  function walk(n: Node, parentVar?: string): string {
+  // ---- inline factory emitter for :if branches ----
+  function emitBlockFactory(children: Node[]): string {
+    const localId = (() => {
+      let n = 0;
+      return (p: string) => `__b_${p}${++n}`;
+    })();
+
+    // We produce a factory that returns a Block:
+    // { el, mount(parent, anchor), patch?(), destroy() }
+    // It builds nodes on mount to avoid leaking unused nodes when branch is off.
+    const linesCreate: string[] = [];
+    const linesMount: string[] = [];
+    const linesDestroy: string[] = [];
+    const linesBindings: string[] = [];
+
+    function walkInline(n: Node, parentVar: string) {
+      if (n.type === "text") {
+        const expr = compileTextExpr(n.value);
+        const t = localId("t");
+        linesCreate.push(
+          `const ${t} = Dom.createText(${
+            expr ? "''" : JSON.stringify(n.value)
+          });`
+        );
+        linesMount.push(`Dom.insert(${t}, ${parentVar});`);
+        if (expr)
+          linesBindings.push(`__stops.push(bindText(${t}, () => (${expr})));`);
+        return;
+      }
+
+      const el = localId("e");
+      linesCreate.push(
+        `const ${el} = Dom.createElement(${JSON.stringify(n.tag)});`
+      );
+      if (scopeAttr)
+        linesCreate.push(
+          `Dom.setAttr(${el}, ${JSON.stringify(scopeAttr)}, "");`
+        );
+
+      // attrs for inline block (same logic as main walk, but emit to *local* arrays)
+      const attrs = n.attrs || {};
+      for (const k in attrs) {
+        const v = attrs[k];
+
+        if (k === ":text") {
+          const tn = localId("t");
+          linesCreate.push(`const ${tn} = Dom.createText('');`);
+          linesMount.push(`Dom.insert(${tn}, ${el});`);
+          linesBindings.push(`__stops.push(bindText(${tn}, () => (${v})));`);
+          continue;
+        }
+        if (k === ":class") {
+          linesBindings.push(`__stops.push(bindClass(${el}, () => (${v})));`);
+          continue;
+        }
+        if (k === ":style") {
+          linesBindings.push(`__stops.push(bindStyle(${el}, () => (${v})));`);
+          continue;
+        }
+        if (k === ":show") {
+          linesBindings.push(`__stops.push(bindShow(${el}, () => !!(${v})));`);
+          continue;
+        }
+
+        if (k.startsWith("m-model")) {
+          const [, ...mods] = k.split(".");
+          const opts: any = {};
+          if (mods.includes("number")) opts.number = true;
+          if (mods.includes("trim")) opts.trim = true;
+          if (mods.includes("lazy")) opts.lazy = true;
+
+          const model = v.trim();
+          const isRef = /\.value$/.test(model);
+          const getExpr = isRef ? model : `${model}()`;
+          const setExpr = isRef ? `${model} = $_` : `${model}.set($_)`;
+          linesBindings.push(
+            `__stops.push(bindModel(ctx.app, ${el}, () => (${getExpr}), (v) => (${setExpr.replace(
+              /\$_/g,
+              "v"
+            )}), ${JSON.stringify(opts)}));`
+          );
+          continue;
+        }
+
+        if (k.startsWith("@")) {
+          const raw = k.slice(1);
+          const parts = raw.split(".");
+          const type = parts.shift()!;
+          const behaviorMods = parts.filter((m) => BEHAVIOR_MODS.has(m));
+          const keyMods = parts.filter((m) =>
+            Object.prototype.hasOwnProperty.call(KEY_MODS, m)
+          );
+
+          let handler = `(e)=>{ ${v} }`;
+          if (keyMods.length) {
+            const condKeys = keyMods.map((km) => KEY_MODS[km]).flat();
+            handler = `(e)=>{ if (!(${JSON.stringify(
+              condKeys
+            )}.includes(e.key))) return; ${v} }`;
+          }
+          if (behaviorMods.length) {
+            handler = `withModifiers(${handler}, [${behaviorMods
+              .map((m) => `'${m}'`)
+              .join(",")}])`;
+          }
+          linesBindings.push(
+            `__stops.push(onEvent(ctx.app, ${el}, ${JSON.stringify(
+              type
+            )}, ${handler}));`
+          );
+          continue;
+        }
+
+        if (k.startsWith(":")) {
+          const name = k.slice(1);
+          linesBindings.push(
+            `__stops.push(bindAttr(${el}, ${JSON.stringify(
+              name
+            )}, () => (${v})));`
+          );
+          continue;
+        }
+
+        // static attr
+        linesCreate.push(
+          `Dom.setAttr(${el}, ${JSON.stringify(k)}, ${JSON.stringify(v)});`
+        );
+      }
+
+      // children
+      for (const c of n.children) {
+        walkInline(c, el);
+      }
+
+      linesMount.push(`Dom.insert(${el}, ${parentVar});`);
+    }
+
+    const rootContainer = localId("frag"); // not a real fragment, just a marker var name
+    // We'll insert nodes directly into parent; keep a marker 'el' anchor for Block
+    const anchor = localId("a");
+    linesCreate.unshift(`const ${anchor} = Dom.createAnchor('if-block');`);
+    // mount inserts the anchor first; children follow
+    const mountHeader = [
+      `Dom.insert(${anchor}, parent, anchorNode ?? null);`,
+      `const ${rootContainer} = parent;`,
+    ];
+
+    const destroyFooter = [
+      `for (let i = __stops.length - 1; i >= 0; i--) { try { __stops[i](); } catch {} }`,
+      `Dom.remove(${anchor});`,
+    ];
+
+    // walk all children into the local arrays
+    for (const ch of children) {
+      walkInline(ch, rootContainer);
+    }
+
+    return `() => {
+  const __stops: any[] = [];
+  ${linesCreate.join("\n  ")}
+  return {
+    el: ${anchor},
+    mount(parent: Node, anchorNode?: Node | null) {
+      ${mountHeader.join("\n      ")}
+      ${linesMount.join("\n      ")}
+      ${linesBindings.join("\n      ")}
+    },
+    destroy() {
+      ${destroyFooter.join("\n      ")}
+    }
+  };
+}`;
+  }
+
+  // ---- main walker with support for <template :if>, :else-if, :else ----
+  function walk(
+    n: Node,
+    parentVar?: string,
+    siblings?: Node[],
+    idx?: number
+  ): string {
+    // Transform control flow: <template :if="..."> ... [<template :else-if="..."> ...]* [<template :else>...]?
+    if (
+      n.type === "el" &&
+      n.tag === "template" &&
+      n.attrs[":if"] &&
+      parentVar &&
+      siblings &&
+      typeof idx === "number"
+    ) {
+      const thenChildren = n.children;
+      const conds: string[] = [n.attrs[":if"]];
+      const branches: Node[][] = [thenChildren];
+
+      // consume subsequent else-if / else siblings
+      let j = idx + 1;
+      while (j < siblings.length) {
+        const sib = siblings[j];
+        if (sib.type !== "el" || sib.tag !== "template") break;
+        const hasElseIf = typeof sib.attrs[":else-if"] === "string";
+        const hasElse = Object.prototype.hasOwnProperty.call(
+          sib.attrs,
+          ":else"
+        );
+        if (!hasElseIf && !hasElse) break;
+        if (hasElseIf) {
+          conds.push(sib.attrs[":else-if"]);
+          branches.push(sib.children);
+          j++;
+          continue;
+        }
+        if (hasElse) {
+          conds.push("true");
+          branches.push(sib.children);
+          j++;
+          break;
+        }
+      }
+
+      // Build nested bindIf for conds, right-associated:
+      // bindIf(parent, c0, make0, () => bindIf(parent, c1, make1, ...))
+      extraImports.add("bindIf");
+      const makeFns = branches.map((b) => emitBlockFactory(b));
+
+      // Build nested lambda for else chain
+      const nestedElse = (k: number): string => {
+        if (k >= conds.length - 1) {
+          return makeFns[k];
+        }
+        return `() => {
+          return {
+            el: Dom.createText(''), mount() {}, destroy() {}
+          } as any; // unused
+        }`;
+      };
+
+      // Synthesize nested bindIf calls
+      // Starting from the last branch, fold into else of previous
+      let elseExpr = "undefined";
+      for (let p = conds.length - 1; p >= 0; p--) {
+        const c = conds[p];
+        const mk = makeFns[p];
+        const elsePart =
+          p === conds.length - 1 ? "undefined" : `() => ${elseExpr}`;
+        elseExpr = `bindIf(${parentVar}, () => (${c}), ${mk}, ${elsePart})`;
+      }
+
+      mount.push(`__stops.push(${elseExpr});`);
+      // we've consumed siblings up to j-1; caller will skip them by advancing index
+      // return parentVar just as placeholder
+      return parentVar;
+    }
+
     if (n.type === "text") {
-      // Ignore pure whitespace nodes to avoid noise; keep others intact
       if (!n.value || n.value.trim() === "") return parentVar || "";
       const expr = compileTextExpr(n.value);
       const t = vid("t");
@@ -81,7 +332,6 @@ export function compileTemplateToIR(
     if (scopeAttr)
       create.push(`Dom.setAttr(${el}, ${JSON.stringify(scopeAttr)}, "");`);
 
-    // attributes & directives
     const attrs = n.attrs || {};
     for (const k in attrs) {
       const v = attrs[k];
@@ -98,18 +348,15 @@ export function compileTemplateToIR(
         bindings.push({ kind: "class", target: el, expr: v });
         continue;
       }
-
       if (k === ":style") {
         bindings.push({ kind: "style", target: el, expr: v });
         continue;
       }
-
       if (k === ":show") {
         bindings.push({ kind: "show", target: el, expr: v });
         continue;
       }
 
-      // m-model with modifiers: m-model.number.trim.lazy="expr"
       if (k.startsWith("m-model")) {
         const [, ...mods] = k.split(".");
         const opts: any = {};
@@ -117,11 +364,10 @@ export function compileTemplateToIR(
         if (mods.includes("trim")) opts.trim = true;
         if (mods.includes("lazy")) opts.lazy = true;
 
-        // Signals-first: support signal `foo` and ref `bar.value` interop
         const model = v.trim();
         const isRef = /\.value$/.test(model);
-        const getExpr = isRef ? model : `${model}()`; // ref.value | signal()
-        const setExpr = isRef ? `${model} = $_` : `${model}.set($_)`; // assign   | signal.set(v)
+        const getExpr = isRef ? model : `${model}()`;
+        const setExpr = isRef ? `${model} = $_` : `${model}.set($_)`;
 
         bindings.push({
           kind: "model",
@@ -133,53 +379,48 @@ export function compileTemplateToIR(
         continue;
       }
 
-      // @event with modifiers, e.g. @keyup.enter.prevent
       if (k.startsWith("@")) {
-        const raw = k.slice(1); // e.g. "click.prevent.stop" or "keyup.enter"
+        const raw = k.slice(1);
         const parts = raw.split(".");
-        const type = parts.shift()!; // "click" | "keyup" | ...
+        const type = parts.shift()!;
         const behaviorMods = parts.filter((m) => BEHAVIOR_MODS.has(m));
         const keyMods = parts.filter((m) =>
           Object.prototype.hasOwnProperty.call(KEY_MODS, m)
         );
 
         let handler = `(e)=>{ ${v} }`;
-
         if (keyMods.length) {
           const condKeys = keyMods.map((km) => KEY_MODS[km]).flat();
           handler = `(e)=>{ if (!(${JSON.stringify(
             condKeys
           )}.includes(e.key))) return; ${v} }`;
         }
-
         if (behaviorMods.length) {
           handler = `withModifiers(${handler}, [${behaviorMods
             .map((m) => `'${m}'`)
             .join(",")}])`;
         }
-
         bindings.push({ kind: "event", target: el, type, handler });
         continue;
       }
 
-      // General dynamic attributes: :id, :src, :data-x, :aria-label, ...
       if (k.startsWith(":")) {
         const name = k.slice(1);
         bindings.push({ kind: "attr", target: el, name, expr: v });
         continue;
       }
 
-      // static attr
       create.push(
         `Dom.setAttr(${el}, ${JSON.stringify(k)}, ${JSON.stringify(v)});`
       );
     }
 
-    // children
-    for (const c of n.children) {
-      const childVar = walk(c, el);
-      if (c.type === "el") {
-        mount.push(`Dom.insert(${childVar}, ${el});`);
+    for (let i = 0; i < n.children.length; i++) {
+      const c = n.children[i];
+      // allow control flow inside element children too
+      const res = walk(c, el, n.children, i);
+      if (c.type === "el" && !(c.tag === "template" && c.attrs[":if"])) {
+        mount.push(`Dom.insert(${res}, ${el});`);
       }
     }
 
@@ -187,8 +428,15 @@ export function compileTemplateToIR(
     return el;
   }
 
+  // top-level walk with sibling awareness for <template :if> clusters
   const roots: string[] = [];
-  for (const c of ast) roots.push(walk(c));
+  for (let i = 0; i < ast.length; i++) {
+    const n = ast[i];
+    const res = walk(n, undefined, ast, i);
+    if (n.type === "el" && !(n.tag === "template" && n.attrs[":if"])) {
+      roots.push(res);
+    }
+  }
 
   const rootMounts = roots.map(
     (r) => `Dom.insert(${r}, target, anchor ?? null);`
@@ -198,9 +446,13 @@ export function compileTemplateToIR(
     file,
     name,
     create,
-    mount: [...rootMounts, ...mount], // include child mounts collected during walk
+    mount: [...rootMounts, ...mount],
     bindings,
   };
+
+  // pass extra imports to codegen (e.g. bindIf)
+  (ir as any).imports = Array.from(extraImports);
+
   return ir;
 }
 
