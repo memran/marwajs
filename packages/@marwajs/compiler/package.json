@@ -9,7 +9,7 @@
     "vitest": "^2.1.9"
   },
   "dependencies": {
-    "@marwajs/core": "workspace:*"
+    "@marwajs/core": "file:../@marwajs/core"
   },
   "bin": {
     "marwa-compile": "dist/bin/compile.js"
