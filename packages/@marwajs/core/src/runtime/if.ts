@@ -1,6 +1,6 @@
-import { effect, stop } from '../reactivity/effect';
-import * as Dom from './dom';
-import type { Block } from './list';
+import { effect, stop } from "../reactivity/effect";
+import * as Dom from "./dom";
+import type { Block } from "./list";
 
 /**
  * Conditional mount/destroy. Creates a stable region delimited by two anchors.
@@ -12,8 +12,8 @@ export function bindIf(
   makeThen: () => Block,
   makeElse?: () => Block
 ): () => void {
-  const start = Dom.createAnchor('if-start');
-  const end = Dom.createAnchor('if-end');
+  const start = Dom.createAnchor("if-start");
+  const end = Dom.createAnchor("if-end");
   Dom.insert(start, parent, null);
   Dom.insert(end, parent, null);
 

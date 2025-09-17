@@ -6,6 +6,7 @@ import { createApp, nextTick } from "@marwajs/core";
 async function evalCompiled(code: string) {
   const runtime = await import("@marwajs/core");
 
+  // namespace imports: import * as Core from '@marwajs/core'
   const namespaces: string[] = [];
   code = code.replace(
     /import\s*\*\s*as\s*([A-Za-z$_][\w$]*)\s*from\s*['"]@marwajs\/core['"]\s*;?/g,
@@ -15,15 +16,16 @@ async function evalCompiled(code: string) {
     }
   );
 
+  // named imports (possibly aliased)
   const destructured: Array<{ orig: string; alias: string }> = [];
   code = code.replace(
     /import\s*\{([^}]+)\}\s*from\s*['"]@marwajs\/core['"]\s*;?/g,
     (_, group) => {
       group
         .split(",")
-        .map((s) => s.trim())
+        .map((s: string) => s.trim())
         .filter(Boolean)
-        .forEach((entry) => {
+        .forEach((entry: string) => {
           const m = entry.match(
             /^([A-Za-z$_][\w$]*)(?:\s+as\s+([A-Za-z$_][\w$]*))?$/
           );
@@ -33,25 +35,29 @@ async function evalCompiled(code: string) {
     }
   );
 
+  // type-only imports
   code = code.replace(
     /import\s+type\s*\{[^}]*\}\s*from\s*['"]@marwajs\/core['"]\s*;?/g,
     ""
   );
 
-  const header: string[] = [];
+  // build header that rebinds imports from the runtime namespace
+  const headerParts: string[] = [];
   if (destructured.length) {
+    // use rename syntax on the LHS: { orig: alias }
     const pieces = destructured
       .map(({ orig, alias }) => (orig === alias ? orig : `${orig}: ${alias}`))
       .join(", ");
-    header.push(`const { ${pieces} } = runtime;`);
+    headerParts.push(`const { ${pieces} } = runtime;`);
   }
-  for (const ns of namespaces) header.push(`const ${ns} = runtime;`);
+  for (const ns of namespaces) headerParts.push(`const ${ns} = runtime;`);
+  const header = headerParts.length ? headerParts.join("\n") + "\n" : "";
 
+  // ESM default export → return
   const body = code.replace(/export\s+default\s+/, "return ");
-  const factory = new Function(
-    "runtime",
-    (header.length ? header.join("\n") + "\n" : "") + body
-  );
+
+  // Evaluate
+  const factory = new Function("runtime", header + body);
   return factory(runtime);
 }
 
@@ -92,10 +98,62 @@ describe("SFC basic", () => {
 
     expect(host.textContent).toContain("Hello world");
 
+    // Scoped style got injected once
     const hasScoped = Array.from(document.head.querySelectorAll("style")).some(
       (s) => s.textContent?.includes("[data-mw-")
     );
     expect(hasScoped).toBe(true);
+
+    inst.destroy();
+  });
+
+  it("SFC :if / :else-if / :else → mounts correct branch and switches on state changes", async () => {
+    const sfc = `
+<template>
+  <div>
+    <template :if="n() === 0">
+      <p>zero</p>
+    </template>
+    <template :else-if="n() === 1">
+      <p>one</p>
+    </template>
+    <template :else>
+      <p>many</p>
+    </template>
+    <button @click="n.set(n() + 1)">inc</button>
+  </div>
+</template>
+<script lang="ts">
+  import { signal } from '@marwajs/core'
+  const n = signal(0)
+</script>`.trim();
+
+    const { code } = compileSFC(sfc, "/virtual/IfDemo.marwa");
+    const Comp = await evalCompiled(code);
+
+    const host = document.createElement("div");
+    const app = createApp(host);
+
+    const inst = Comp({}, { app });
+    inst.mount(host);
+    await nextTick();
+
+    // initial
+    expect(host.textContent).toContain("zero");
+    expect(host.querySelectorAll("p").length).toBe(1);
+
+    // -> one
+    const btn = host.querySelector("button")!;
+    btn.click();
+    await nextTick();
+    expect(host.textContent).toContain("one");
+    expect(host.querySelectorAll("p").length).toBe(1);
+
+    // -> many
+    btn.click();
+    await nextTick();
+    expect(host.textContent).toContain("many");
+    expect(host.querySelectorAll("p").length).toBe(1);
 
     inst.destroy();
   });

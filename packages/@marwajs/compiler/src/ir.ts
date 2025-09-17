@@ -75,9 +75,12 @@ export type Binding =
 export interface ComponentIR {
   file: string;
   name: string;
-  // prelude creates DOM nodes and local vars; returns array of root nodes
   create: string[]; // lines of JS to create static nodes
   mount: string[]; // lines of JS to insert nodes
-  bindings: Binding[]; // runtime reactive bindings (calls to directive helpers)
-  destroy?: string[]; // optional cleanup
+  bindings: Binding[]; // reactive directive calls
+  destroy?: string[];
+
+  // add these to avoid casts
+  imports?: string[]; // extra runtime imports (e.g., ['bindIf'])
+  prelude?: string[]; // setup snippets injected into component setup
 }

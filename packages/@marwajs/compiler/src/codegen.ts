@@ -1,10 +1,7 @@
 import type { ComponentIR, Binding } from "./ir";
 
 // Keep this minimal; we’ll add selectively based on bindings
-const BASE_IMPORTS = new Set([
-  "defineComponent",
-  // dom + directives will be added as needed
-]);
+const BASE_IMPORTS = new Set(["defineComponent"]);
 
 export function generateComponent(
   ir: ComponentIR & { imports?: string[]; prelude?: string[] }
@@ -14,17 +11,43 @@ export function generateComponent(
   // Always import Dom namespace (compiler targets it)
   used.add("Dom");
 
-  // Add extras requested explicitly
+  // 1) Add extras requested explicitly (e.g., bindIf from :if compiler)
   for (const extra of ir.imports ?? []) used.add(extra);
 
-  // Collect imports by binding usage
+  // 2) Collect imports by binding usage (text/style/model/event etc.)
   for (const b of ir.bindings) {
     collectRuntimeForBinding(b, used);
-    // If handler string uses withModifiers(...), make sure we import it
     if (b.kind === "event" && /\bwithModifiers\s*\(/.test(b.handler)) {
       used.add("withModifiers");
     }
   }
+
+  // 3) Scan free-form code sections (create/mount/destroy/prelude) for helpers
+  //    This captures helpers used by inline block factories (e.g., bindIf, bindText inside :if branches).
+  const blob = [
+    joinLines(ir.create),
+    joinLines(ir.mount),
+    joinLines(ir.destroy ?? []),
+    joinLines(ir.prelude),
+  ].join("\n");
+
+  const maybe = (name: string) => {
+    if (new RegExp(`\\b${name}\\s*\\(`).test(blob)) used.add(name);
+  };
+
+  // Helper names we might emit outside of ir.bindings
+  [
+    "bindIf",
+    "bindText",
+    "bindHTML",
+    "bindShow",
+    "bindClass",
+    "bindStyle",
+    "bindModel",
+    "bindAttr",
+    "onEvent",
+    "withModifiers",
+  ].forEach(maybe);
 
   // Build the import statement (Dom is a named export from core)
   const importList = Array.from(used).sort().join(", ");
@@ -85,16 +108,15 @@ function collectRuntimeForBinding(b: Binding, used: Set<string>) {
       break;
     case "attr":
       used.add("bindAttr");
-      break; // <— NEW
+      break;
     case "event":
       used.add("onEvent");
       break;
   }
-  // Pull withModifiers if the handler string uses it
   if (b.kind === "event" && /\bwithModifiers\s*\(/.test(b.handler)) {
     used.add("withModifiers");
   }
-  used.add("Dom"); // compiler targets Dom
+  used.add("Dom");
   used.add("defineComponent");
 }
 
@@ -113,7 +135,7 @@ function emitBinding(b: Binding): string {
     case "attr":
       return `__stops.push(bindAttr(${b.target}, ${JSON.stringify(
         b.name
-      )}, () => (${b.expr})));`; // <— NEW
+      )}, () => (${b.expr})));`;
     case "model": {
       const opts = b.options ? JSON.stringify(b.options) : "{}";
       const setter = b.set?.replace(/\$_/g, "v") ?? "v => {}";
