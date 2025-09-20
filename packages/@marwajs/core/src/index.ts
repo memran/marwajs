@@ -18,6 +18,7 @@ export {
   type ComponentContext,
 } from "./runtime/component";
 export { bindIf } from "./runtime/if";
+export { bindSwitch } from "./runtime/bindSwitch";
 export { createApp, type App } from "./runtime/app";
 export * as Dom from "./runtime/dom";
 export {

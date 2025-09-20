@@ -106,8 +106,14 @@ describe("SFC basic", () => {
 
     host.querySelector("button")!.click(); // n=2
     await nextTick();
-    console.log(host.innerHTML);
+    //console.log(host.innerHTML);
     expect(host.textContent).toContain("two");
+    expect(host.querySelectorAll("span").length).toBe(1);
+
+    host.querySelector("button")!.click(); // n=3
+    await nextTick();
+    //console.log(host.innerHTML);
+    expect(host.textContent).toContain("other");
     expect(host.querySelectorAll("span").length).toBe(1);
 
     inst.destroy();

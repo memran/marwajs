@@ -65,7 +65,7 @@ export function compileTemplateToIR(
     return "`" + parts.join("") + "`";
   }
 
-  // ---- inline factory emitter for :if branches ----
+  // ---- inline factory emitter for :if branches & :switch cases ----
   function emitBlockFactory(children: Node[]): string {
     use("Dom");
 
@@ -78,7 +78,7 @@ export function compileTemplateToIR(
     const linesMount: string[] = [];
     const linesBindings: string[] = [];
 
-    let ROOT = "";
+    //let ROOT = "";
 
     function insertLine(childVar: string, parentVar: string) {
       if (parentVar === ROOT) {
@@ -179,7 +179,7 @@ export function compileTemplateToIR(
             const condKeys = keyMods.map((km) => KEY_MODS[km]).flat();
             handler = `(e)=>{ if (!(${JSON.stringify(
               condKeys
-            )}.includes(e.key))) return; ${v} }`;
+            )}).includes(e.key)) return; ${v} }`;
           }
           if (behaviorMods.length) {
             handler = `withModifiers(${handler}, [${behaviorMods
@@ -218,10 +218,8 @@ export function compileTemplateToIR(
     }
 
     const rootContainer = localId("frag");
-    ROOT = rootContainer;
-
     const anchor = localId("a");
-    linesCreate.unshift(`const ${anchor} = Dom.createAnchor('if-block');`);
+    let ROOT = rootContainer;
 
     const mountHeader = [
       `Dom.insert(${anchor}, parent, anchorNode ?? null);`,
@@ -238,6 +236,7 @@ export function compileTemplateToIR(
 
     return `() => {
   const __stops = [];
+  const ${anchor} = Dom.createAnchor('block');
   ${linesCreate.join("\n  ")}
   return {
     el: ${anchor},
@@ -253,14 +252,144 @@ export function compileTemplateToIR(
 }`;
   }
 
-  // ---- main walker with support for <template :if>, :else-if, :else ----
+  // ---- helper: empty block factory (no-op) ----
+  function emitEmptyBlockFactory(label = "empty") {
+    return `() => ({ el: Dom.createAnchor(${JSON.stringify(
+      label
+    )}), mount(){}, destroy(){} })`;
+  }
+
+  // ---- helper: reactive chain for else-if branches (existing behavior) ----
+  function emitIfChainFactory(
+    conds: string[],
+    makeFns: string[],
+    start: number
+  ): string | undefined {
+    use("bindIf");
+    use("Dom");
+
+    const last = conds.length - 1;
+    if (start > last) return undefined;
+
+    if (start === last && conds[start] === "true") {
+      return makeFns[start];
+    }
+
+    if (start === last) {
+      const thenF = makeFns[start];
+      const empty = emitEmptyBlockFactory("if-empty");
+      return `() => {
+  const __stops = [];
+  const __anchor = Dom.createAnchor('if-chain');
+  return {
+    el: __anchor,
+    mount(parent, anchorNode) {
+      Dom.insert(__anchor, parent, anchorNode ?? null);
+      __stops.push(bindIf(parent, () => (${conds[start]}), ${thenF}, ${empty}));
+    },
+    destroy() {
+      for (let i = __stops.length - 1; i >= 0; i--) { try { __stops[i](); } catch {} }
+      Dom.remove(__anchor);
+    }
+  };
+}`;
+    }
+
+    const thenF = makeFns[start];
+    const elseF =
+      emitIfChainFactory(conds, makeFns, start + 1) ?? emitEmptyBlockFactory();
+
+    return `() => {
+  const __stops = [];
+  const __anchor = Dom.createAnchor('if-chain');
+  return {
+    el: __anchor,
+    mount(parent, anchorNode) {
+      Dom.insert(__anchor, parent, anchorNode ?? null);
+      __stops.push(bindIf(parent, () => (${conds[start]}), ${thenF}, ${elseF}));
+    },
+    destroy() {
+      for (let i = __stops.length - 1; i >= 0; i--) { try { __stops[i](); } catch {} }
+      Dom.remove(__anchor);
+    }
+  };
+}`;
+  }
+
+  // ---- NEW: compile a <template :switch="expr"> cluster into bindSwitch(...) ----
+  function compileSwitchCluster(
+    switchExpr: string,
+    siblings: Node[],
+    startIndex: number,
+    parentVar: string
+  ): { consumedTo: number } {
+    use("bindSwitch");
+
+    // Collect consecutive <template :case> and optional <template :default>
+    const branches: { when: string; factory: string }[] = [];
+    let elseFactory: string | null = null;
+
+    let j = startIndex + 1;
+    while (j < siblings.length) {
+      const sib = siblings[j];
+      if (sib.type !== "el" || sib.tag !== "template") break;
+
+      const hasCase = Object.prototype.hasOwnProperty.call(sib.attrs, ":case");
+      const hasDefault = Object.prototype.hasOwnProperty.call(
+        sib.attrs,
+        ":default"
+      );
+
+      if (!hasCase && !hasDefault) break;
+
+      if (hasCase) {
+        const caseExpr = (sib.attrs[":case"] ?? "").trim();
+        const f = emitBlockFactory(sib.children);
+        // when: () => ((switchExpr) === (caseExpr))
+        branches.push({
+          when: `() => ((${switchExpr}) === (${caseExpr}))`,
+          factory: f,
+        });
+        j++;
+        continue;
+      }
+
+      if (hasDefault) {
+        elseFactory = emitBlockFactory(sib.children);
+        j++;
+        break; // default must be last we care about
+      }
+    }
+
+    // Emit bindSwitch call
+    if (branches.length === 0 && !elseFactory) {
+      // No usable branches; nothing to mount
+      return { consumedTo: startIndex };
+    }
+
+    const arrayLiteral = `[${branches
+      .map((b) => `{ when: ${b.when}, factory: ${b.factory} }`)
+      .join(", ")}]`;
+
+    if (elseFactory) {
+      mount.push(
+        `__stops.push(bindSwitch(${parentVar}, ${arrayLiteral}, ${elseFactory}));`
+      );
+    } else {
+      mount.push(`__stops.push(bindSwitch(${parentVar}, ${arrayLiteral}));`);
+    }
+
+    return { consumedTo: j - 1 };
+  }
+
+  // ---- main walker with support for <template :if>, :else-if, :else and NEW :switch ----
   function walk(
     n: Node,
     parentVar?: string,
     siblings?: Node[],
     idx?: number
   ): string {
-    // Control flow cluster at same level
+    // Handle <template :if> cluster at same level
     if (
       n.type === "el" &&
       n.tag === "template" &&
@@ -300,55 +429,37 @@ export function compileTemplateToIR(
 
       use("bindIf");
 
-      // Prepare factories for each branch
       const makeFns = branches.map((b) => emitBlockFactory(b));
-
-      // Build an else-chooser factory: () => Block
-      function buildElseChooser(fromIdx: number): string | undefined {
-        if (fromIdx >= conds.length) return undefined;
-
-        // We will emit a function body that returns a Block chosen by conditions.
-        const lines: string[] = [];
-        for (let k = fromIdx; k < conds.length; k++) {
-          const cond = conds[k];
-          const mk = makeFns[k];
-          const isLast = k === conds.length - 1;
-          if (cond === "true") {
-            // terminal :else branch
-            lines.push(`return (${mk})();`);
-            break;
-          } else {
-            lines.push(`if ((${cond})) return (${mk})();`);
-            if (isLast) {
-              // no :else and no further :else-if matched → return empty block
-              lines.push(
-                `return { el: Dom.createAnchor('empty'), mount(){}, destroy(){} };`
-              );
-            }
-          }
-        }
-
-        return `() => { ${lines.join("\n")} }`;
-      }
-
-      // Outer bindIf uses first branch as THEN
       const thenFactory = makeFns[0];
-      // Else chooser starts at index 1 (next branch)
-      const elseFactory = buildElseChooser(1);
+      const elseChainFactory =
+        emitIfChainFactory(conds, makeFns, 1) ?? emitEmptyBlockFactory();
 
-      // mount a single bindIf for the whole cluster
-      if (elseFactory) {
-        mount.push(
-          `__stops.push(bindIf(${parentVar}, () => (${conds[0]}), ${thenFactory}, ${elseFactory}));`
-        );
-      } else {
-        // no else-if/else branches → simple two-state (then or clear)
-        mount.push(
-          `__stops.push(bindIf(${parentVar}, () => (${conds[0]}), ${thenFactory}));`
-        );
-      }
-      // Return parent placeholder (no direct node var for templates)
+      mount.push(
+        `__stops.push(bindIf(${parentVar}, () => (${conds[0]}), ${thenFactory}, ${elseChainFactory}));`
+      );
       return parentVar;
+    }
+
+    // Handle <template :switch="..."> cluster at same level
+    if (
+      n.type === "el" &&
+      n.tag === "template" &&
+      typeof n.attrs[":switch"] === "string" &&
+      parentVar &&
+      siblings &&
+      typeof idx === "number"
+    ) {
+      const switchExpr = n.attrs[":switch"];
+      // Compile its own children? In switch semantics, direct children are ignored;
+      // only following siblings with :case / :default define branches.
+      const { consumedTo } = compileSwitchCluster(
+        switchExpr,
+        siblings,
+        idx,
+        parentVar
+      );
+      // Skip consumed siblings (:case / :default)
+      return siblings[consumedTo] ? ((idx = consumedTo), parentVar) : parentVar;
     }
 
     if (n.type === "text") {
@@ -429,7 +540,7 @@ export function compileTemplateToIR(
           const condKeys = keyMods.map((km) => KEY_MODS[km]).flat();
           handler = `(e)=>{ if (!(${JSON.stringify(
             condKeys
-          )}.includes(e.key))) return; ${v} }`;
+          )}).includes(e.key)) return; ${v} }`;
         }
         if (behaviorMods.length) {
           handler = `withModifiers(${handler}, [${behaviorMods
@@ -453,19 +564,15 @@ export function compileTemplateToIR(
 
     // === children (cluster-aware) ===
     for (let i = 0; i < n.children.length; i++) {
-      //console.log(n.children[i]);
-
       const c = n.children[i];
 
-      // Handle <template :if> cluster and skip its else-siblings
+      // Handle nested <template :if> cluster
       if (
         c.type === "el" &&
         c.tag === "template" &&
         typeof c.attrs[":if"] === "string"
       ) {
-        // Emit a single bindIf(...) for the cluster
         void walk(c, el, n.children, i);
-
         // Skip following :else-if / :else siblings in this cluster
         let j = i + 1;
         while (j < n.children.length) {
@@ -479,7 +586,23 @@ export function compileTemplateToIR(
           if (!hasElseIf && !hasElse) break;
           j++;
         }
-        i = j - 1; // skip to last else/else-if
+        i = j - 1;
+        continue;
+      }
+
+      // Handle nested <template :switch> cluster
+      if (
+        c.type === "el" &&
+        c.tag === "template" &&
+        typeof c.attrs[":switch"] === "string"
+      ) {
+        const { consumedTo } = compileSwitchCluster(
+          c.attrs[":switch"],
+          n.children,
+          i,
+          el
+        );
+        i = consumedTo; // skip consumed :case/:default siblings
         continue;
       }
 
@@ -499,7 +622,7 @@ export function compileTemplateToIR(
   for (let i = 0; i < ast.length; i++) {
     const n = ast[i];
 
-    // If an :if cluster appears at top-level, consume it and skip else-siblings
+    // Top-level :if cluster
     if (
       n.type === "el" &&
       n.tag === "template" &&
@@ -523,9 +646,38 @@ export function compileTemplateToIR(
       continue;
     }
 
+    // Top-level :switch cluster
+    if (
+      n.type === "el" &&
+      n.tag === "template" &&
+      typeof n.attrs[":switch"] === "string"
+    ) {
+      compileSwitchCluster(n.attrs[":switch"], ast, i, "target" as any);
+      // Skip :case / :default siblings
+      let j = i + 1;
+      while (j < ast.length) {
+        const sib = ast[j];
+        if (sib.type !== "el" || sib.tag !== "template") break;
+        const hasCase = Object.prototype.hasOwnProperty.call(
+          sib.attrs,
+          ":case"
+        );
+        const hasDefault = Object.prototype.hasOwnProperty.call(
+          sib.attrs,
+          ":default"
+        );
+        if (!hasCase && !hasDefault) break;
+        j++;
+      }
+      i = j - 1;
+      continue;
+    }
+
     const res = walk(n, undefined, ast, i);
     if (n.type === "el") {
-      if (!(n.tag === "template" && ":if" in n.attrs)) {
+      if (
+        !(n.tag === "template" && (":if" in n.attrs || ":switch" in n.attrs))
+      ) {
         roots.push(res);
       }
     }
@@ -543,7 +695,7 @@ export function compileTemplateToIR(
     bindings,
   };
 
-  // pass extra imports (e.g., bindIf, bindText used inside inline factories)
+  // pass extra imports (e.g., bindIf, bindText, bindSwitch used inside inline factories)
   (ir as any).imports = Array.from(extraImports);
 
   return ir;

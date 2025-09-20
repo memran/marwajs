@@ -38,6 +38,7 @@ export function generateComponent(
   // Helper names we might emit outside of ir.bindings
   [
     "bindIf",
+    "bindSwitch",
     "bindText",
     "bindHTML",
     "bindShow",
