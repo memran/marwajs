@@ -4,7 +4,7 @@ type Node =
   | { type: "el"; tag: string; attrs: Record<string, string>; children: Node[] }
   | { type: "text"; value: string };
 
-// Behavior modifiers passed to withModifiers
+// Behavior modifiers we pass through to withModifiers
 const BEHAVIOR_MODS = new Set<string>([
   "stop",
   "prevent",
@@ -14,7 +14,7 @@ const BEHAVIOR_MODS = new Set<string>([
   "passive",
 ]);
 
-// Key modifier → DOM e.key values
+// Map key modifiers to DOM e.key values
 const KEY_MODS: Record<string, string[]> = {
   enter: ["Enter"],
   esc: ["Escape"],
@@ -37,12 +37,17 @@ export function compileTemplateToIR(
   const create: string[] = [];
   const mount: string[] = [];
   const bindings: Binding[] = [];
-  const extraImports = new Set<string>(); // runtime helpers used inside inline blocks
+
+  // Track extra runtime imports required by inline factories / control flow
+  const extraImports = new Set<string>();
+  const use = (n: string) => extraImports.add(n);
+  use("Dom"); // always used by compiler output
 
   let id = 0;
   const vid = (p: string) => `_${p}${++id}`;
 
   function compileTextExpr(raw: string): string | null {
+    // Split by {{ expr }} and return a template literal expression
     const re = /\{\{\s*([^}]+?)\s*\}\}/g;
     let last = 0;
     let m: RegExpExecArray | null;
@@ -54,29 +59,30 @@ export function compileTemplateToIR(
       last = m.index + m[0].length;
     }
     const tail = raw.slice(last);
-    if (!parts.length && !tail) return null;
+    if (!parts.length && !tail) return null; // no dynamic
     if (tail) parts.push(tail.replace(/`/g, "\\`"));
     if (parts.length === 1 && !/\$\{/.test(parts[0])) return null;
     return "`" + parts.join("") + "`";
   }
 
-  // ----- inline Block factory for :if branches -----
+  // ---- inline factory emitter for :if branches ----
   function emitBlockFactory(children: Node[]): string {
-    let local = 0;
-    const lid = (p: string) => `__b_${p}${++local}`;
+    // Ensure Dom is imported for factory code
+    use("Dom");
+
+    const localId = (() => {
+      let n = 0;
+      return (p: string) => `__b_${p}${++n}`;
+    })();
 
     const linesCreate: string[] = [];
     const linesMount: string[] = [];
     const linesBindings: string[] = [];
 
-    function use(name: string) {
-      extraImports.add(name);
-    }
-
     function walkInline(n: Node, parentVar: string) {
       if (n.type === "text") {
         const expr = compileTextExpr(n.value);
-        const t = lid("t");
+        const t = localId("t");
         linesCreate.push(
           `const ${t} = Dom.createText(${
             expr ? "''" : JSON.stringify(n.value)
@@ -84,13 +90,13 @@ export function compileTemplateToIR(
         );
         linesMount.push(`Dom.insert(${t}, ${parentVar});`);
         if (expr) {
-          use("bindText");
           linesBindings.push(`__stops.push(bindText(${t}, () => (${expr})));`);
+          use("bindText");
         }
         return;
       }
 
-      const el = lid("e");
+      const el = localId("e");
       linesCreate.push(
         `const ${el} = Dom.createElement(${JSON.stringify(n.tag)});`
       );
@@ -104,26 +110,26 @@ export function compileTemplateToIR(
         const v = attrs[k];
 
         if (k === ":text") {
-          const tn = lid("t");
+          const tn = localId("t");
           linesCreate.push(`const ${tn} = Dom.createText('');`);
           linesMount.push(`Dom.insert(${tn}, ${el});`);
-          use("bindText");
           linesBindings.push(`__stops.push(bindText(${tn}, () => (${v})));`);
+          use("bindText");
           continue;
         }
         if (k === ":class") {
-          use("bindClass");
           linesBindings.push(`__stops.push(bindClass(${el}, () => (${v})));`);
+          use("bindClass");
           continue;
         }
         if (k === ":style") {
-          use("bindStyle");
           linesBindings.push(`__stops.push(bindStyle(${el}, () => (${v})));`);
+          use("bindStyle");
           continue;
         }
         if (k === ":show") {
-          use("bindShow");
           linesBindings.push(`__stops.push(bindShow(${el}, () => !!(${v})));`);
+          use("bindShow");
           continue;
         }
 
@@ -139,13 +145,13 @@ export function compileTemplateToIR(
           const getExpr = isRef ? model : `${model}()`;
           const setExpr = isRef ? `${model} = $_` : `${model}.set($_)`;
 
-          use("bindModel");
           linesBindings.push(
             `__stops.push(bindModel(ctx.app, ${el}, () => (${getExpr}), (v) => (${setExpr.replace(
               /\$_/g,
               "v"
             )}), ${JSON.stringify(opts)}));`
           );
+          use("bindModel");
           continue;
         }
 
@@ -166,108 +172,145 @@ export function compileTemplateToIR(
             )}.includes(e.key))) return; ${v} }`;
           }
           if (behaviorMods.length) {
-            use("withModifiers");
             handler = `withModifiers(${handler}, [${behaviorMods
               .map((m) => `'${m}'`)
               .join(",")}])`;
+            use("withModifiers");
           }
-          use("onEvent");
           linesBindings.push(
             `__stops.push(onEvent(ctx.app, ${el}, ${JSON.stringify(
               type
             )}, ${handler}));`
           );
+          use("onEvent");
           continue;
         }
 
         if (k.startsWith(":")) {
           const name = k.slice(1);
-          use("bindAttr");
           linesBindings.push(
             `__stops.push(bindAttr(${el}, ${JSON.stringify(
               name
             )}, () => (${v})));`
           );
+          use("bindAttr");
           continue;
         }
 
+        // static attr
         linesCreate.push(
           `Dom.setAttr(${el}, ${JSON.stringify(k)}, ${JSON.stringify(v)});`
         );
       }
 
-      for (const c of n.children) walkInline(c, el);
+      for (const c of n.children) {
+        walkInline(c, el);
+      }
+
       linesMount.push(`Dom.insert(${el}, ${parentVar});`);
     }
 
-    const anchor = lid("a");
+    const rootContainer = localId("frag");
+    const anchor = localId("a");
     linesCreate.unshift(`const ${anchor} = Dom.createAnchor('if-block');`);
 
-    for (const ch of children) walkInline(ch, "parent");
+    const mountHeader = [
+      `Dom.insert(${anchor}, parent, anchorNode ?? null);`,
+      `const ${rootContainer} = parent;`,
+    ];
 
+    const destroyFooter = [
+      `for (let i = __stops.length - 1; i >= 0; i--) { try { __stops[i](); } catch {} }`,
+      `Dom.remove(${anchor});`,
+    ];
+
+    for (const ch of children) {
+      walkInline(ch, rootContainer);
+    }
+
+    // NOTE: no TS types in emitted JS below
     return `() => {
   const __stops = [];
   ${linesCreate.join("\n  ")}
   return {
     el: ${anchor},
     mount(parent, anchorNode) {
-      Dom.insert(${anchor}, parent, anchorNode ?? null);
+      ${mountHeader.join("\n      ")}
       ${linesMount.join("\n      ")}
       ${linesBindings.join("\n      ")}
     },
     destroy() {
-      for (let i = __stops.length - 1; i >= 0; i--) { try { __stops[i](); } catch {} }
-      Dom.remove(${anchor});
+      ${destroyFooter.join("\n      ")}
     }
   };
 }`;
   }
 
-  // Build a nested bindIf chain for conds/branches mounted into `parentExpr`
-  function buildIfChain(
-    parentExpr: string,
-    conds: string[],
-    branches: Node[][]
+  // ---- main walker with support for <template :if>, :else-if, :else ----
+  function walk(
+    n: Node,
+    parentVar?: string,
+    siblings?: Node[],
+    idx?: number
   ): string {
-    extraImports.add("bindIf");
+    // Control flow cluster at same level
+    if (
+      n.type === "el" &&
+      n.tag === "template" &&
+      n.attrs[":if"] &&
+      parentVar &&
+      siblings &&
+      typeof idx === "number"
+    ) {
+      const thenChildren = n.children;
+      const conds: string[] = [n.attrs[":if"]];
+      const branches: Node[][] = [thenChildren];
 
-    function makeElseFactory(startIdx: number): string {
-      const a = `__nest_a_${++id}`;
-      const stop = `__nest_stop_${id}`;
-      const chain = buildIfChain(
-        "parent",
-        conds.slice(startIdx),
-        branches.slice(startIdx)
-      );
-      return `() => {
-  let ${stop};
-  const ${a} = Dom.createAnchor('if-nest');
-  return {
-    el: ${a},
-    mount(parent, anchorNode) {
-      Dom.insert(${a}, parent, anchorNode ?? null);
-      ${stop} = ${chain};
-    },
-    destroy() {
-      if (${stop}) ${stop}();
-      Dom.remove(${a});
-    }
-  };
-}`;
+      // consume following :else-if / :else
+      let j = idx + 1;
+      while (j < siblings.length) {
+        const sib = siblings[j];
+        if (sib.type !== "el" || sib.tag !== "template") break;
+        const hasElseIf = typeof (sib as any).attrs[":else-if"] === "string";
+        const hasElse = Object.prototype.hasOwnProperty.call(
+          (sib as any).attrs,
+          ":else"
+        );
+        if (!hasElseIf && !hasElse) break;
+        if (hasElseIf) {
+          conds.push((sib as any).attrs[":else-if"]);
+          branches.push(sib.children);
+          j++;
+          continue;
+        }
+        if (hasElse) {
+          conds.push("true");
+          branches.push(sib.children);
+          j++;
+          break;
+        }
+      }
+
+      use("bindIf");
+
+      // Prepare factories for each branch
+      const makeFns = branches.map((b) => emitBlockFactory(b));
+
+      // Fold from the end: else-most first
+      let elseExpr = "undefined";
+      for (let p = conds.length - 1; p >= 0; p--) {
+        const c = conds[p];
+        const mk = makeFns[p];
+        const elsePart =
+          p === conds.length - 1 ? "undefined" : `() => ${elseExpr}`;
+        elseExpr = `bindIf(${parentVar}, () => (${c}), ${mk}, ${elsePart})`;
+      }
+
+      mount.push(`__stops.push(${elseExpr});`);
+      // Return parent placeholder (no direct node var for templates)
+      return parentVar;
     }
 
-    if (conds.length === 1) {
-      const mk = emitBlockFactory(branches[0]);
-      return `bindIf(${parentExpr}, () => (${conds[0]}), ${mk})`;
-    } else {
-      const mk0 = emitBlockFactory(branches[0]);
-      const elseFactory = makeElseFactory(1);
-      return `bindIf(${parentExpr}, () => (${conds[0]}), ${mk0}, ${elseFactory})`;
-    }
-  }
-
-  // ---- main walker for regular nodes ----
-  function walk(n: Node, parentVar?: string): string {
     if (n.type === "text") {
       if (!n.value || n.value.trim() === "") return parentVar || "";
       const expr = compileTextExpr(n.value);
@@ -286,7 +329,6 @@ export function compileTemplateToIR(
     if (scopeAttr)
       create.push(`Dom.setAttr(${el}, ${JSON.stringify(scopeAttr)}, "");`);
 
-    // attributes & directives
     const attrs = n.attrs || {};
     for (const k in attrs) {
       const v = attrs[k];
@@ -298,7 +340,6 @@ export function compileTemplateToIR(
         bindings.push({ kind: "text", target: tn, expr: v });
         continue;
       }
-
       if (k === ":class") {
         bindings.push({ kind: "class", target: el, expr: v });
         continue;
@@ -370,57 +411,42 @@ export function compileTemplateToIR(
       );
     }
 
-    // children (two-phase: normal children first; defer :if clusters)
-    {
-      const deferredIfs: string[] = [];
-      let i = 0;
-      while (i < n.children.length) {
-        const c = n.children[i];
+    // === children (cluster-aware) ===
+    for (let i = 0; i < n.children.length; i++) {
+      //console.log(n.children[i]);
 
-        if (
-          c.type === "el" &&
-          c.tag === "template" &&
-          typeof c.attrs[":if"] === "string"
-        ) {
-          const conds: string[] = [c.attrs[":if"]];
-          const branches: Node[][] = [c.children];
+      const c = n.children[i];
 
-          let j = i + 1;
-          while (j < n.children.length) {
-            const sib = n.children[j];
-            if (sib.type !== "el" || sib.tag !== "template") break;
-            const hasElseIf = typeof sib.attrs[":else-if"] === "string";
-            const hasElse = Object.prototype.hasOwnProperty.call(
-              sib.attrs,
-              ":else"
-            );
-            if (!hasElseIf && !hasElse) break;
-            if (hasElseIf) {
-              conds.push(sib.attrs[":else-if"]);
-              branches.push(sib.children);
-              j++;
-              continue;
-            }
-            if (hasElse) {
-              conds.push("true");
-              branches.push(sib.children);
-              j++;
-              break;
-            }
-          }
+      // Handle <template :if> cluster and skip its else-siblings
+      if (
+        c.type === "el" &&
+        c.tag === "template" &&
+        typeof c.attrs[":if"] === "string"
+      ) {
+        // Emit a single bindIf(...) for the cluster
+        void walk(c, el, n.children, i);
 
-          deferredIfs.push(buildIfChain(el, conds, branches));
-          i = j;
-          continue;
+        // Skip following :else-if / :else siblings in this cluster
+        let j = i + 1;
+        while (j < n.children.length) {
+          const sib = n.children[j];
+          if (sib.type !== "el" || sib.tag !== "template") break;
+          const hasElseIf = typeof sib.attrs[":else-if"] === "string";
+          const hasElse = Object.prototype.hasOwnProperty.call(
+            sib.attrs,
+            ":else"
+          );
+          if (!hasElseIf && !hasElse) break;
+          j++;
         }
-
-        // normal child — let walk(c, el) emit its own insert
-        walk(c, el);
-        i++;
+        i = j - 1; // skip to last else/else-if
+        continue;
       }
 
-      for (const expr of deferredIfs) {
-        mount.push(`__stops.push(${expr});`);
+      // Normal child
+      const res = walk(c, el, n.children, i);
+      if (c.type === "el") {
+        mount.push(`Dom.insert(${res}, ${el});`);
       }
     }
 
@@ -428,23 +454,20 @@ export function compileTemplateToIR(
     return el;
   }
 
-  // top-level traversal: insert normal roots first, then root :if chains
+  // === top-level cluster-aware ===
   const roots: string[] = [];
-  const deferredRootIfs: string[] = [];
+  for (let i = 0; i < ast.length; i++) {
+    const n = ast[i];
 
-  let ri = 0;
-  while (ri < ast.length) {
-    const n = ast[ri];
-
+    // If an :if cluster appears at top-level, consume it and skip else-siblings
     if (
       n.type === "el" &&
       n.tag === "template" &&
       typeof n.attrs[":if"] === "string"
     ) {
-      const conds: string[] = [n.attrs[":if"]];
-      const branches: Node[][] = [n.children];
+      void walk(n, "target" as any, ast, i);
 
-      let j = ri + 1;
+      let j = i + 1;
       while (j < ast.length) {
         const sib = ast[j];
         if (sib.type !== "el" || sib.tag !== "template") break;
@@ -454,28 +477,18 @@ export function compileTemplateToIR(
           ":else"
         );
         if (!hasElseIf && !hasElse) break;
-        if (hasElseIf) {
-          conds.push(sib.attrs[":else-if"]);
-          branches.push(sib.children);
-          j++;
-          continue;
-        }
-        if (hasElse) {
-          conds.push("true");
-          branches.push(sib.children);
-          j++;
-          break;
-        }
+        j++;
       }
-
-      deferredRootIfs.push(buildIfChain("target", conds, branches));
-      ri = j;
+      i = j - 1;
       continue;
     }
 
-    const res = walk(n, undefined);
-    if (n.type === "el") roots.push(res);
-    ri++;
+    const res = walk(n, undefined, ast, i);
+    if (n.type === "el") {
+      if (!(n.tag === "template" && ":if" in n.attrs)) {
+        roots.push(res);
+      }
+    }
   }
 
   const rootMounts = roots.map(
@@ -486,15 +499,13 @@ export function compileTemplateToIR(
     file,
     name,
     create,
-    mount: [
-      ...rootMounts,
-      ...mount,
-      ...deferredRootIfs.map((e) => `__stops.push(${e});`),
-    ],
+    mount: [...rootMounts, ...mount],
     bindings,
   };
 
+  // pass extra imports (e.g., bindIf, bindText used inside inline factories)
   (ir as any).imports = Array.from(extraImports);
+
   return ir;
 }
 

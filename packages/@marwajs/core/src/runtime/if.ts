@@ -3,25 +3,33 @@ import * as Dom from "./dom";
 import type { Block } from "./list";
 
 /**
- * Conditional mount/destroy. Creates a stable region delimited by two anchors.
- * The factory returns a Block with { el, mount(parent, anchor), patch?(), destroy() }.
+ * Conditional mount/destroy with a stable [start, end) region.
+ * Always inserts block before `end` so DOM order is stable.
  */
 export function bindIf(
   parent: Node,
   get: () => boolean,
   makeThen: () => Block,
-  makeElse?: () => Block
+  makeElse?: () => Block,
+  slot?: Node
 ): () => void {
   const start = Dom.createAnchor("if-start");
   const end = Dom.createAnchor("if-end");
-  Dom.insert(start, parent, null);
-  Dom.insert(end, parent, null);
+
+  if (slot) {
+    Dom.insert(start, parent, slot as any);
+    Dom.insert(end, parent, slot as any);
+    Dom.remove(slot as any);
+  } else {
+    Dom.insert(start, parent, null);
+    Dom.insert(end, parent, null);
+  }
 
   let cur: Block | null = null;
   let curIsThen = false;
 
   function mountBlock(b: Block) {
-    // Always insert before the `end` anchor so ordering is stable
+    // Block must honor provided anchor; we always place before `end`.
     b.mount(parent, end);
     cur = b;
   }
@@ -29,20 +37,26 @@ export function bindIf(
   function clear() {
     if (cur) {
       cur.destroy();
-      // ensure node removed if destroy didn't
-      if (cur.el.parentNode === parent) Dom.remove(cur.el);
       cur = null;
+    }
+    let node = start.nextSibling;
+    while (node && node !== end) {
+      const next = node.nextSibling;
+      Dom.remove(node);
+      node = next;
     }
   }
 
   const runner = effect(() => {
     const on = !!get();
+
     if (on) {
       if (!cur || !curIsThen) {
         clear();
         mountBlock(makeThen());
         curIsThen = true;
       } else {
+        // optional fast-path update
         cur.patch?.(undefined as any, 0);
       }
     } else {
