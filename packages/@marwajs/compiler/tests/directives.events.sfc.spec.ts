@@ -1,56 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { compileSFC } from "../src/sfc/compileSFC";
 import { createApp, nextTick } from "@marwajs/core";
-
-// Minimal evaluator: inline @marwajs/core imports aren’t needed if codegen already imports them.
-// We still support namespace/named stripping if present.
-async function evalCompiled(code: string) {
-  const runtime = await import("@marwajs/core");
-
-  // strip any core imports and rebind to runtime
-  const ns: string[] = [];
-  code = code.replace(
-    /import\s*\*\s*as\s*([A-Za-z$_][\w$]*)\s*from\s*['"]@marwajs\/core['"]\s*;?/g,
-    (_, n) => (ns.push(n), "")
-  );
-  const named: Array<{ orig: string; alias: string }> = [];
-  code = code.replace(
-    /import\s*\{([^}]+)\}\s*from\s*['"]@marwajs\/core['"]\s*;?/g,
-    (_, g) => (
-      g
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .forEach((e) => {
-          const m = e.match(
-            /^([A-Za-z$_][\w$]*)(?:\s+as\s+([A-Za-z$_][\w$]*))?$/
-          );
-          if (m) named.push({ orig: m[1], alias: m[2] ?? m[1] });
-        }),
-      ""
-    )
-  );
-  code = code.replace(
-    /import\s+type\s*\{[^}]*\}\s*from\s*['"]@marwajs\/core['"]\s*;?/g,
-    ""
-  );
-
-  const header: string[] = [];
-  if (named.length) {
-    const lhs = named
-      .map(({ orig, alias }) => (orig === alias ? orig : `${orig}: ${alias}`))
-      .join(", ");
-    header.push(`const { ${lhs} } = runtime;`);
-  }
-  for (const n of ns) header.push(`const ${n} = runtime;`);
-
-  const body = code.replace(/export\s+default\s+/, "return ");
-  const factory = new Function(
-    "runtime",
-    (header.length ? header.join("\n") + "\n" : "") + body
-  );
-  return factory(runtime);
-}
+import { evalCompiled } from "./test-utils";
 
 describe("SFC @event directive", () => {
   it("handles @click and @click.prevent from compiled SFC", async () => {

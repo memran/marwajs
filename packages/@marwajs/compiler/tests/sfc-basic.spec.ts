@@ -59,20 +59,30 @@ describe("SFC basic", () => {
     host.appendChild(btn);
     expect(host.querySelector("#raw")).toBeTruthy();
   });
+
   it("SFC :if / :else-if / :else → mounts correct branch and switches on state changes", async () => {
     const sfc = `
-<template>
-  <div>
-    <template :if="n()===0">zero</template>
-    <template :else-if="n()===1">one</template>
-    <template :else>other</template>
-    <button @click="n.set(n()+1)">inc</button>
-  </div>
-</template>
-<script lang="ts">
-  import { signal } from '@marwajs/core'
-  const n = signal(0)
-</script>`.trim();
+  <template>
+    <div>
+      <template :if="n()===0">
+        <span>zero</span>
+      </template>
+      <template :else-if="n()===1">
+         <span>one</span>
+      </template>
+       <template :else-if="n()===2">
+         <span>two</span>
+      </template>
+      <template :else>
+         <span>other</span>
+        </template>
+      <button @click="n.set(n()+1)">inc</button>
+    </div>
+  </template>
+  <script lang="ts">
+    import { signal } from '@marwajs/core'
+    const n = signal(0)
+  </script>`.trim();
 
     const { code } = compileSFC(sfc, "/virtual/IfDemo.marwa");
     const Comp = await evalCompiled(code);
@@ -85,19 +95,20 @@ describe("SFC basic", () => {
     await nextTick(); // ensure effects/if flush
 
     // initial (n=0): "zero"
+
     expect(host.textContent).toContain("zero");
-    expect(host.querySelectorAll("p").length).toBe(0);
+    expect(host.querySelectorAll("span").length).toBe(1);
 
-    // const btn = host.querySelector("button")!;
-    // btn.click(); // n=1
-    // await nextTick();
-    // expect(host.textContent).toContain("one");
-    // expect(host.querySelectorAll("p").length).toBe(1);
+    host.querySelector("button")!.click(); // n =1
+    await nextTick();
+    expect(host.textContent).toContain("one");
+    expect(host.querySelectorAll("span").length).toBe(1);
 
-    // btn.click(); // n=2
-    // await nextTick();
-    // expect(host.textContent).toContain("other");
-    // expect(host.querySelectorAll("p").length).toBe(1);
+    host.querySelector("button")!.click(); // n=2
+    await nextTick();
+    console.log(host.innerHTML);
+    expect(host.textContent).toContain("two");
+    expect(host.querySelectorAll("span").length).toBe(1);
 
     inst.destroy();
   });
