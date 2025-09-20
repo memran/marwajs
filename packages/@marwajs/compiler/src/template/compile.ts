@@ -67,7 +67,6 @@ export function compileTemplateToIR(
 
   // ---- inline factory emitter for :if branches ----
   function emitBlockFactory(children: Node[]): string {
-    // Ensure Dom is imported for factory code
     use("Dom");
 
     const localId = (() => {
@@ -79,6 +78,16 @@ export function compileTemplateToIR(
     const linesMount: string[] = [];
     const linesBindings: string[] = [];
 
+    let ROOT = "";
+
+    function insertLine(childVar: string, parentVar: string) {
+      if (parentVar === ROOT) {
+        linesMount.push(`Dom.insert(${childVar}, ${parentVar}, __a);`);
+      } else {
+        linesMount.push(`Dom.insert(${childVar}, ${parentVar});`);
+      }
+    }
+
     function walkInline(n: Node, parentVar: string) {
       if (n.type === "text") {
         const expr = compileTextExpr(n.value);
@@ -88,7 +97,7 @@ export function compileTemplateToIR(
             expr ? "''" : JSON.stringify(n.value)
           });`
         );
-        linesMount.push(`Dom.insert(${t}, ${parentVar});`);
+        insertLine(t, parentVar);
         if (expr) {
           linesBindings.push(`__stops.push(bindText(${t}, () => (${expr})));`);
           use("bindText");
@@ -100,10 +109,11 @@ export function compileTemplateToIR(
       linesCreate.push(
         `const ${el} = Dom.createElement(${JSON.stringify(n.tag)});`
       );
-      if (scopeAttr)
+      if (scopeAttr) {
         linesCreate.push(
           `Dom.setAttr(${el}, ${JSON.stringify(scopeAttr)}, "");`
         );
+      }
 
       const attrs = n.attrs || {};
       for (const k in attrs) {
@@ -197,26 +207,26 @@ export function compileTemplateToIR(
           continue;
         }
 
-        // static attr
         linesCreate.push(
           `Dom.setAttr(${el}, ${JSON.stringify(k)}, ${JSON.stringify(v)});`
         );
       }
 
-      for (const c of n.children) {
-        walkInline(c, el);
-      }
+      for (const c of n.children) walkInline(c, el);
 
-      linesMount.push(`Dom.insert(${el}, ${parentVar});`);
+      insertLine(el, parentVar);
     }
 
     const rootContainer = localId("frag");
+    ROOT = rootContainer;
+
     const anchor = localId("a");
     linesCreate.unshift(`const ${anchor} = Dom.createAnchor('if-block');`);
 
     const mountHeader = [
       `Dom.insert(${anchor}, parent, anchorNode ?? null);`,
       `const ${rootContainer} = parent;`,
+      `const __a = anchorNode ?? null;`,
     ];
 
     const destroyFooter = [
@@ -224,11 +234,8 @@ export function compileTemplateToIR(
       `Dom.remove(${anchor});`,
     ];
 
-    for (const ch of children) {
-      walkInline(ch, rootContainer);
-    }
+    for (const ch of children) walkInline(ch, rootContainer);
 
-    // NOTE: no TS types in emitted JS below
     return `() => {
   const __stops = [];
   ${linesCreate.join("\n  ")}
@@ -296,17 +303,50 @@ export function compileTemplateToIR(
       // Prepare factories for each branch
       const makeFns = branches.map((b) => emitBlockFactory(b));
 
-      // Fold from the end: else-most first
-      let elseExpr = "undefined";
-      for (let p = conds.length - 1; p >= 0; p--) {
-        const c = conds[p];
-        const mk = makeFns[p];
-        const elsePart =
-          p === conds.length - 1 ? "undefined" : `() => ${elseExpr}`;
-        elseExpr = `bindIf(${parentVar}, () => (${c}), ${mk}, ${elsePart})`;
+      // Build an else-chooser factory: () => Block
+      function buildElseChooser(fromIdx: number): string | undefined {
+        if (fromIdx >= conds.length) return undefined;
+
+        // We will emit a function body that returns a Block chosen by conditions.
+        const lines: string[] = [];
+        for (let k = fromIdx; k < conds.length; k++) {
+          const cond = conds[k];
+          const mk = makeFns[k];
+          const isLast = k === conds.length - 1;
+          if (cond === "true") {
+            // terminal :else branch
+            lines.push(`return (${mk})();`);
+            break;
+          } else {
+            lines.push(`if ((${cond})) return (${mk})();`);
+            if (isLast) {
+              // no :else and no further :else-if matched → return empty block
+              lines.push(
+                `return { el: Dom.createAnchor('empty'), mount(){}, destroy(){} };`
+              );
+            }
+          }
+        }
+
+        return `() => { ${lines.join("\n")} }`;
       }
 
-      mount.push(`__stops.push(${elseExpr});`);
+      // Outer bindIf uses first branch as THEN
+      const thenFactory = makeFns[0];
+      // Else chooser starts at index 1 (next branch)
+      const elseFactory = buildElseChooser(1);
+
+      // mount a single bindIf for the whole cluster
+      if (elseFactory) {
+        mount.push(
+          `__stops.push(bindIf(${parentVar}, () => (${conds[0]}), ${thenFactory}, ${elseFactory}));`
+        );
+      } else {
+        // no else-if/else branches → simple two-state (then or clear)
+        mount.push(
+          `__stops.push(bindIf(${parentVar}, () => (${conds[0]}), ${thenFactory}));`
+        );
+      }
       // Return parent placeholder (no direct node var for templates)
       return parentVar;
     }

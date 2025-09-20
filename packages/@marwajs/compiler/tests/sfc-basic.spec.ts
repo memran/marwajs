@@ -1,65 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { compileSFC } from "../src/sfc/compileSFC";
 import { createApp, nextTick } from "@marwajs/core";
-
-// Evaluate compiled ESM by inlining @marwajs/core imports.
-async function evalCompiled(code: string) {
-  const runtime = await import("@marwajs/core");
-
-  // namespace imports: import * as Core from '@marwajs/core'
-  const namespaces: string[] = [];
-  code = code.replace(
-    /import\s*\*\s*as\s*([A-Za-z$_][\w$]*)\s*from\s*['"]@marwajs\/core['"]\s*;?/g,
-    (_, ns) => {
-      namespaces.push(ns);
-      return "";
-    }
-  );
-
-  // named imports (possibly aliased)
-  const destructured: Array<{ orig: string; alias: string }> = [];
-  code = code.replace(
-    /import\s*\{([^}]+)\}\s*from\s*['"]@marwajs\/core['"]\s*;?/g,
-    (_, group) => {
-      group
-        .split(",")
-        .map((s: string) => s.trim())
-        .filter(Boolean)
-        .forEach((entry: string) => {
-          const m = entry.match(
-            /^([A-Za-z$_][\w$]*)(?:\s+as\s+([A-Za-z$_][\w$]*))?$/
-          );
-          if (m) destructured.push({ orig: m[1], alias: m[2] ?? m[1] });
-        });
-      return "";
-    }
-  );
-
-  // type-only imports
-  code = code.replace(
-    /import\s+type\s*\{[^}]*\}\s*from\s*['"]@marwajs\/core['"]\s*;?/g,
-    ""
-  );
-
-  // build header that rebinds imports from the runtime namespace
-  const headerParts: string[] = [];
-  if (destructured.length) {
-    // use rename syntax on the LHS: { orig: alias }
-    const pieces = destructured
-      .map(({ orig, alias }) => (orig === alias ? orig : `${orig}: ${alias}`))
-      .join(", ");
-    headerParts.push(`const { ${pieces} } = runtime;`);
-  }
-  for (const ns of namespaces) headerParts.push(`const ${ns} = runtime;`);
-  const header = headerParts.length ? headerParts.join("\n") + "\n" : "";
-
-  // ESM default export → return
-  const body = code.replace(/export\s+default\s+/, "return ");
-
-  // Evaluate
-  const factory = new Function("runtime", header + body);
-  return factory(runtime);
-}
+import { evalCompiled } from "./test-utils";
 
 describe("SFC basic", () => {
   it("compiles and runs a .marwa with mustache + @click.prevent", async () => {

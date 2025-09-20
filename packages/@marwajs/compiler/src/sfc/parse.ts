@@ -8,19 +8,44 @@ export interface SFCDescriptor {
 }
 
 export function parseSFC(code: string, file: string): SFCDescriptor {
-  const blk = (name: string) => {
-    const open = new RegExp(`<${name}([^>]*)>`, "i");
-    const close = new RegExp(`</${name}>`, "i");
-    const m = code.match(open);
-    if (!m) return null;
-    const start = (m.index ?? 0) + m[0].length;
-    const end = code.indexOf(code.match(close)?.[0] ?? `</${name}>`, start);
-    const rawAttrs = (m[1] ?? "").trim();
-    return {
-      content: code.slice(start, end),
-      attrs: parseAttrs(rawAttrs),
-    };
-  };
+  function blk(name: string) {
+    const openTag = new RegExp(`<${name}([^>]*)>`, "ig");
+    let m: RegExpExecArray | null;
+    while ((m = openTag.exec(code))) {
+      const rawAttrs = (m[1] ?? "").trim();
+
+      // find true end of opening tag (handles > inside quotes)
+      let startIdx = m.index! + m[0].length;
+      {
+        let i = m.index! + name.length + 1; // after <name
+        let inQuote: '"' | "'" | null = null;
+        for (; i < code.length; i++) {
+          const ch = code[i];
+          if (ch === '"' || ch === "'") {
+            if (inQuote === ch) inQuote = null;
+            else if (!inQuote) inQuote = ch;
+          }
+          if (ch === ">" && !inQuote) {
+            startIdx = i + 1;
+            break;
+          }
+        }
+      }
+
+      // find matching closing tag
+      const closeTag = new RegExp(`</${name}>`, "ig");
+      closeTag.lastIndex = startIdx;
+      const cm = closeTag.exec(code);
+      if (!cm)
+        throw new Error(`[SFC] Missing </${name}> for <${name}> in ${file}`);
+
+      const endIdx = cm.index;
+      const content = code.slice(startIdx, endIdx);
+      return { content, attrs: parseAttrs(rawAttrs) };
+    }
+    return null;
+  }
+
   const t = blk("template");
   if (!t) throw new Error(`[SFC] <template> missing in ${file}`);
   const s = blk("script");
