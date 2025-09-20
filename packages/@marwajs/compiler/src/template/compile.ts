@@ -65,7 +65,7 @@ export function compileTemplateToIR(
     return "`" + parts.join("") + "`";
   }
 
-  // ---- inline factory emitter for :if branches & :switch cases ----
+  // ---- inline factory emitter for block content (used by if/switch branches) ----
   function emitBlockFactory(children: Node[]): string {
     use("Dom");
 
@@ -78,9 +78,7 @@ export function compileTemplateToIR(
     const linesMount: string[] = [];
     const linesBindings: string[] = [];
 
-    //let ROOT = "";
-
-    function insertLine(childVar: string, parentVar: string) {
+    function insertLine(childVar: string, parentVar: string, ROOT: string) {
       if (parentVar === ROOT) {
         linesMount.push(`Dom.insert(${childVar}, ${parentVar}, __a);`);
       } else {
@@ -88,7 +86,143 @@ export function compileTemplateToIR(
       }
     }
 
-    function walkInline(n: Node, parentVar: string) {
+    // --- INLINE CLUSTERS inside a block ---
+
+    function inlineEmitIfCluster(
+      parentVar: string,
+      siblings: Node[],
+      startIndex: number
+    ): number {
+      use("bindIf");
+
+      // gather conds + branches
+      const first = siblings[startIndex] as any;
+      const conds: string[] = [first.attrs[":if"]];
+      const branches: Node[][] = [first.children];
+
+      let j = startIndex + 1;
+      while (j < siblings.length) {
+        const sib = siblings[j];
+        if (sib.type !== "el" || sib.tag !== "template") break;
+        const hasElseIf = typeof (sib as any).attrs[":else-if"] === "string";
+        const hasElse = Object.prototype.hasOwnProperty.call(
+          (sib as any).attrs,
+          ":else"
+        );
+        if (!hasElseIf && !hasElse) break;
+        if (hasElseIf) {
+          conds.push((sib as any).attrs[":else-if"]);
+          branches.push(sib.children);
+          j++;
+          continue;
+        }
+        if (hasElse) {
+          conds.push("true");
+          branches.push(sib.children);
+          j++;
+          break;
+        }
+      }
+
+      // factories for each branch (inline -> inline again)
+      const makeFns = branches.map((b) => emitBlockFactory(b));
+      const thenFactory = makeFns[0];
+      const elseChain =
+        emitIfChainFactory(conds, makeFns, 1) ?? emitEmptyBlockFactory();
+
+      linesBindings.push(
+        `__stops.push(bindIf(${parentVar}, () => (${conds[0]}), ${thenFactory}, ${elseChain}));`
+      );
+      return j - 1; // last consumed index
+    }
+
+    function inlineEmitSwitchCluster(
+      switchExpr: string,
+      parentVar: string,
+      siblings: Node[],
+      startIndex: number
+    ): number {
+      use("bindSwitch");
+
+      const branches: { when: string; factory: string }[] = [];
+      let elseFactory: string | null = null;
+
+      let j = startIndex + 1;
+      while (j < siblings.length) {
+        const sib = siblings[j];
+        if (sib.type !== "el" || sib.tag !== "template") break;
+
+        const hasCase = Object.prototype.hasOwnProperty.call(
+          (sib as any).attrs,
+          ":case"
+        );
+        const hasDefault = Object.prototype.hasOwnProperty.call(
+          (sib as any).attrs,
+          ":default"
+        );
+
+        if (!hasCase && !hasDefault) break;
+
+        if (hasCase) {
+          const caseExpr = ((sib as any).attrs[":case"] ?? "").trim();
+          const f = emitBlockFactory(sib.children);
+          branches.push({
+            when: `() => ((${switchExpr}) === (${caseExpr}))`,
+            factory: f,
+          });
+          j++;
+          continue;
+        }
+
+        if (hasDefault) {
+          elseFactory = emitBlockFactory(sib.children);
+          j++;
+          break; // default ends cluster
+        }
+      }
+
+      if (branches.length === 0 && !elseFactory) return startIndex;
+
+      const arrayLiteral = `[${branches
+        .map((b) => `{ when: (${b.when}), factory: (${b.factory}) }`)
+        .join(", ")}]`;
+
+      if (elseFactory) {
+        linesBindings.push(
+          `__stops.push(bindSwitch(${parentVar}, ${arrayLiteral}, ${elseFactory}));`
+        );
+      } else {
+        linesBindings.push(
+          `__stops.push(bindSwitch(${parentVar}, ${arrayLiteral}));`
+        );
+      }
+      return j - 1;
+    }
+
+    function walkInline(
+      n: Node,
+      parentVar: string,
+      siblings: Node[],
+      idx: number,
+      ROOT: string
+    ): number {
+      // INLINE control-flow clusters (template :if / :switch)
+      if (
+        n.type === "el" &&
+        n.tag === "template" &&
+        typeof (n as any).attrs[":if"] === "string"
+      ) {
+        return inlineEmitIfCluster(parentVar, siblings, idx);
+      }
+      if (
+        n.type === "el" &&
+        n.tag === "template" &&
+        typeof (n as any).attrs[":switch"] === "string"
+      ) {
+        const sw = (n as any).attrs[":switch"];
+        return inlineEmitSwitchCluster(sw, parentVar, siblings, idx);
+      }
+
       if (n.type === "text") {
         const expr = compileTextExpr(n.value);
         const t = localId("t");
@@ -97,14 +231,15 @@ export function compileTemplateToIR(
             expr ? "''" : JSON.stringify(n.value)
           });`
         );
-        insertLine(t, parentVar);
+        insertLine(t, parentVar, ROOT);
         if (expr) {
           linesBindings.push(`__stops.push(bindText(${t}, () => (${expr})));`);
           use("bindText");
         }
-        return;
+        return idx;
       }
 
+      // element
       const el = localId("e");
       linesCreate.push(
         `const ${el} = Dom.createElement(${JSON.stringify(n.tag)});`
@@ -115,7 +250,7 @@ export function compileTemplateToIR(
         );
       }
 
-      const attrs = n.attrs || {};
+      const attrs = (n as any).attrs || {};
       for (const k in attrs) {
         const v = attrs[k];
 
@@ -179,7 +314,7 @@ export function compileTemplateToIR(
             const condKeys = keyMods.map((km) => KEY_MODS[km]).flat();
             handler = `(e)=>{ if (!(${JSON.stringify(
               condKeys
-            )}).includes(e.key)) return; ${v} }`;
+            )}.includes(e.key))) return; ${v} }`;
           }
           if (behaviorMods.length) {
             handler = `withModifiers(${handler}, [${behaviorMods
@@ -212,14 +347,21 @@ export function compileTemplateToIR(
         );
       }
 
-      for (const c of n.children) walkInline(c, el);
+      // descend into children of normal element
+      if ((n as any).children) {
+        const kids = (n as any).children as Node[];
+        for (let i = 0; i < kids.length; i++) {
+          i = walkInline(kids[i], el, kids, i, ROOT);
+        }
+      }
 
-      insertLine(el, parentVar);
+      insertLine(el, parentVar, ROOT);
+      return idx;
     }
 
     const rootContainer = localId("frag");
     const anchor = localId("a");
-    let ROOT = rootContainer;
+    const ROOT = rootContainer;
 
     const mountHeader = [
       `Dom.insert(${anchor}, parent, anchorNode ?? null);`,
@@ -232,7 +374,10 @@ export function compileTemplateToIR(
       `Dom.remove(${anchor});`,
     ];
 
-    for (const ch of children) walkInline(ch, rootContainer);
+    // walk block children with inline cluster support
+    for (let i = 0; i < children.length; i++) {
+      i = walkInline(children[i], rootContainer, children, i, ROOT);
+    }
 
     return `() => {
   const __stops = [];
@@ -259,7 +404,7 @@ export function compileTemplateToIR(
     )}), mount(){}, destroy(){} })`;
   }
 
-  // ---- helper: reactive chain for else-if branches (existing behavior) ----
+  // ---- helper: reactive chain for else-if branches ----
   function emitIfChainFactory(
     conds: string[],
     makeFns: string[],
@@ -316,7 +461,7 @@ export function compileTemplateToIR(
 }`;
   }
 
-  // ---- NEW: compile a <template :switch="expr"> cluster into bindSwitch(...) ----
+  // ---- compile sibling-level :switch cluster into bindSwitch(...) ----
   function compileSwitchCluster(
     switchExpr: string,
     siblings: Node[],
@@ -325,7 +470,6 @@ export function compileTemplateToIR(
   ): { consumedTo: number } {
     use("bindSwitch");
 
-    // Collect consecutive <template :case> and optional <template :default>
     const branches: { when: string; factory: string }[] = [];
     let elseFactory: string | null = null;
 
@@ -334,18 +478,19 @@ export function compileTemplateToIR(
       const sib = siblings[j];
       if (sib.type !== "el" || sib.tag !== "template") break;
 
-      const hasCase = Object.prototype.hasOwnProperty.call(sib.attrs, ":case");
+      const hasCase = Object.prototype.hasOwnProperty.call(
+        (sib as any).attrs,
+        ":case"
+      );
       const hasDefault = Object.prototype.hasOwnProperty.call(
-        sib.attrs,
+        (sib as any).attrs,
         ":default"
       );
-
       if (!hasCase && !hasDefault) break;
 
       if (hasCase) {
-        const caseExpr = (sib.attrs[":case"] ?? "").trim();
+        const caseExpr = ((sib as any).attrs[":case"] ?? "").trim();
         const f = emitBlockFactory(sib.children);
-        // when: () => ((switchExpr) === (caseExpr))
         branches.push({
           when: `() => ((${switchExpr}) === (${caseExpr}))`,
           factory: f,
@@ -353,22 +498,19 @@ export function compileTemplateToIR(
         j++;
         continue;
       }
-
       if (hasDefault) {
         elseFactory = emitBlockFactory(sib.children);
         j++;
-        break; // default must be last we care about
+        break;
       }
     }
 
-    // Emit bindSwitch call
     if (branches.length === 0 && !elseFactory) {
-      // No usable branches; nothing to mount
       return { consumedTo: startIndex };
     }
 
     const arrayLiteral = `[${branches
-      .map((b) => `{ when: ${b.when}, factory: ${b.factory} }`)
+      .map((b) => `{ when: (${b.when}), factory: (${b.factory}) }`)
       .join(", ")}]`;
 
     if (elseFactory) {
@@ -382,7 +524,7 @@ export function compileTemplateToIR(
     return { consumedTo: j - 1 };
   }
 
-  // ---- main walker with support for <template :if>, :else-if, :else and NEW :switch ----
+  // ---- main walker with support for <template :if>, :else-if, :else and :switch ----
   function walk(
     n: Node,
     parentVar?: string,
@@ -393,13 +535,13 @@ export function compileTemplateToIR(
     if (
       n.type === "el" &&
       n.tag === "template" &&
-      n.attrs[":if"] &&
+      (n as any).attrs[":if"] &&
       parentVar &&
       siblings &&
       typeof idx === "number"
     ) {
       const thenChildren = n.children;
-      const conds: string[] = [n.attrs[":if"]];
+      const conds: string[] = [(n as any).attrs[":if"]];
       const branches: Node[][] = [thenChildren];
 
       // consume following :else-if / :else
@@ -431,11 +573,11 @@ export function compileTemplateToIR(
 
       const makeFns = branches.map((b) => emitBlockFactory(b));
       const thenFactory = makeFns[0];
-      const elseChainFactory =
+      const elseChain =
         emitIfChainFactory(conds, makeFns, 1) ?? emitEmptyBlockFactory();
 
       mount.push(
-        `__stops.push(bindIf(${parentVar}, () => (${conds[0]}), ${thenFactory}, ${elseChainFactory}));`
+        `__stops.push(bindIf(${parentVar}, () => (${conds[0]}), ${thenFactory}, ${elseChain}));`
       );
       return parentVar;
     }
@@ -444,22 +586,20 @@ export function compileTemplateToIR(
     if (
       n.type === "el" &&
       n.tag === "template" &&
-      typeof n.attrs[":switch"] === "string" &&
+      typeof (n as any).attrs[":switch"] === "string" &&
       parentVar &&
       siblings &&
       typeof idx === "number"
     ) {
-      const switchExpr = n.attrs[":switch"];
-      // Compile its own children? In switch semantics, direct children are ignored;
-      // only following siblings with :case / :default define branches.
+      const switchExpr = (n as any).attrs[":switch"];
       const { consumedTo } = compileSwitchCluster(
         switchExpr,
         siblings,
         idx,
         parentVar
       );
-      // Skip consumed siblings (:case / :default)
-      return siblings[consumedTo] ? ((idx = consumedTo), parentVar) : parentVar;
+      // We don't need to return a node; caller loop will skip consumed siblings.
+      return parentVar;
     }
 
     if (n.type === "text") {
@@ -540,7 +680,7 @@ export function compileTemplateToIR(
           const condKeys = keyMods.map((km) => KEY_MODS[km]).flat();
           handler = `(e)=>{ if (!(${JSON.stringify(
             condKeys
-          )}).includes(e.key)) return; ${v} }`;
+          )}.includes(e.key))) return; ${v} }`;
         }
         if (behaviorMods.length) {
           handler = `withModifiers(${handler}, [${behaviorMods
@@ -566,13 +706,14 @@ export function compileTemplateToIR(
     for (let i = 0; i < n.children.length; i++) {
       const c = n.children[i];
 
-      // Handle nested <template :if> cluster
+      // Handle nested <template :if> cluster and skip its else-siblings
       if (
         c.type === "el" &&
         c.tag === "template" &&
         typeof c.attrs[":if"] === "string"
       ) {
         void walk(c, el, n.children, i);
+
         // Skip following :else-if / :else siblings in this cluster
         let j = i + 1;
         while (j < n.children.length) {
@@ -586,7 +727,7 @@ export function compileTemplateToIR(
           if (!hasElseIf && !hasElse) break;
           j++;
         }
-        i = j - 1;
+        i = j - 1; // skip to last else/else-if
         continue;
       }
 
@@ -622,7 +763,7 @@ export function compileTemplateToIR(
   for (let i = 0; i < ast.length; i++) {
     const n = ast[i];
 
-    // Top-level :if cluster
+    // If an :if cluster appears at top-level, consume it and skip else-siblings
     if (
       n.type === "el" &&
       n.tag === "template" &&
