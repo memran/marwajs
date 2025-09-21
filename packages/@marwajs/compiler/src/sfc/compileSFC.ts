@@ -4,39 +4,90 @@ import { compileTemplateToIR } from "../template/compile";
 import { generateComponent } from "../codegen";
 import crypto from "node:crypto";
 
+/**
+ * Try to transpile TS/TSX to plain JS.
+ * - Prefer Sucrase (fast & tiny).
+ * - Fallback to TypeScript transpileModule.
+ * - If neither exists and script is TS, throw a helpful error.
+ */
+function transpileScriptMaybe(src: string, lang?: string | null): string {
+  const isTS = lang === "ts" || lang === "tsx";
+  if (!isTS) return src;
+
+  // Try Sucrase first
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { transform } = require("sucrase");
+    const transforms = lang === "tsx" ? ["typescript", "jsx"] : ["typescript"];
+    const out = transform(src, { transforms });
+    return out.code;
+  } catch (_) {
+    // ignore and try TypeScript
+  }
+
+  // Fallback: TypeScript
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const ts = require("typescript") as typeof import("typescript");
+    const out = ts.transpileModule(src, {
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2020,
+        module: ts.ModuleKind.ESNext,
+        jsx: ts.JsxEmit.Preserve,
+        isolatedModules: true,
+        useDefineForClassFields: false,
+        importHelpers: false,
+        esModuleInterop: false,
+        downlevelIteration: false,
+      },
+      reportDiagnostics: false,
+    });
+    return out.outputText;
+  } catch (_) {
+    throw new Error(
+      `[MarwaJS] <script lang="${lang}"> detected, but no transpiler found.\n` +
+        `Please install either "sucrase" or "typescript" as a devDependency.`
+    );
+  }
+}
+
 export function compileSFC(code: string, file: string): { code: string } {
   const sfc = parseSFC(code, file);
 
-  // Scoped CSS: stamp a unique attr on all elements in this SFC
+  // === Scoped CSS ===
   const scoped = !!sfc.style?.attrs?.scoped;
   const scopeAttr = scoped
     ? `data-mw-${hash(file + (sfc.style?.content ?? ""))}`
     : undefined;
 
-  // Hoist imports from <script>, keep the rest as setup prelude
-  const { hoisted, setup } = splitScript(sfc.script.content);
+  // === Script (transpile first if TS), then split ===
+  const rawScript = sfc.script?.content ?? "";
+  const scriptLang = sfc.script?.attrs?.lang ?? null;
 
-  // Template → IR
-  const ir: any = compileTemplateToIR(sfc.template.content, {
+  // Transpile the WHOLE script so type-only imports & annotations vanish
+  const scriptJS = transpileScriptMaybe(rawScript, scriptLang);
+
+  // Now split transpiled JS into hoisted imports & setup body
+  const { hoisted, setup } = splitScript(scriptJS);
+
+  // === Template → IR ===
+  const ir: any = compileTemplateToIR(sfc.template?.content ?? "", {
     file: sfc.file,
     name: guessName(file),
     scopeAttr,
   });
 
-  // ----- Scoped CSS injection (once per SFC instance) -----
-  // We generate a tiny prelude that injects a single <style> tag into <head>.
-  // - attrId (with hyphens) is used only in DOM attributes
-  // - h (hash) is used for JS identifiers (no hyphens)
+  // ===== Scoped CSS injector prelude (once per SFC instance) =====
   let stylePrelude = "";
   if (sfc.style?.content) {
     const css = scoped
       ? scopeCSS(sfc.style.content, scopeAttr!)
       : sfc.style.content;
 
-    const h = hash(file); // e.g. "a1b2c3d4"
-    const attrId = `mw-style-${h}`; // used in <style data-mw-id="...">
-    const varOnce = `__mw_style_once_${h}`; // JS identifier (no hyphens)
-    const fnInject = `__mw_inject_${h}`; // JS identifier (no hyphens)
+    const h = hash(file);
+    const attrId = `mw-style-${h}`;
+    const varOnce = `__mw_style_once_${h}`;
+    const fnInject = `__mw_inject_${h}`;
 
     stylePrelude = `
 let ${varOnce} = false;
@@ -54,24 +105,25 @@ ${fnInject}();
   }
 
   // Allow <script> (setup) and style prelude to run inside component setup
+  // IMPORTANT: do NOT overwrite ir.imports here; template compiler may have set helpers.
   ir.prelude = [stylePrelude, setup].filter(Boolean);
-  ir.imports = []; // runtime imports are inferred by codegen from bindings
 
-  // IR → ESM
+  // === IR → component module body ===
   const { code: componentCode } = generateComponent(ir);
 
-  // Join hoisted user imports + generated component body
+  // === Join hoisted imports (already JS) + component body ===
   const module = [...hoisted, componentCode].join("\n");
 
   return { code: module };
 }
 
-/** Split <script> into hoisted import lines and the rest (setup body). */
+/** Split script into hoisted import lines and the rest (setup body). Input must be JS already. */
 function splitScript(src: string): { hoisted: string[]; setup: string } {
   const lines = (src || "").split("\n");
   const hoisted: string[] = [];
   const rest: string[] = [];
   for (const l of lines) {
+    // Keep only real JS imports (TS type imports were removed by transpile step)
     if (/^\s*import\s/.test(l)) hoisted.push(l);
     else if (l.trim()) rest.push(l);
   }

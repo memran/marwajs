@@ -65,7 +65,7 @@ export function compileTemplateToIR(
     return "`" + parts.join("") + "`";
   }
 
-  // ---- inline factory emitter for block content (used by if/switch branches) ----
+  // ---- block factory emitter (used by THEN / CASE / DEFAULT bodies) ----
   function emitBlockFactory(children: Node[]): string {
     use("Dom");
 
@@ -86,117 +86,118 @@ export function compileTemplateToIR(
       }
     }
 
-    // --- INLINE CLUSTERS inside a block ---
-
-    function inlineEmitIfCluster(
-      parentVar: string,
+    // ---- unified cluster collection (INLINE) ----
+    // normalize :if / :else-if / :else into bindSwitch schema
+    function collectIfClusterInline(
       siblings: Node[],
       startIndex: number
-    ): number {
-      use("bindIf");
-
-      // gather conds + branches
+    ): {
+      branches: { when: string; children: Node[] }[];
+      elseChildren?: Node[];
+      consumedTo: number;
+    } {
       const first = siblings[startIndex] as any;
-      const conds: string[] = [first.attrs[":if"]];
-      const branches: Node[][] = [first.children];
+      const branches: { when: string; children: Node[] }[] = [];
+      let elseChildren: Node[] | undefined = undefined;
+
+      branches.push({
+        when: `() => ((${first.attrs[":if"]}))`,
+        children: first.children,
+      });
 
       let j = startIndex + 1;
       while (j < siblings.length) {
-        const sib = siblings[j];
+        const sib = siblings[j] as any;
         if (sib.type !== "el" || sib.tag !== "template") break;
-        const hasElseIf = typeof (sib as any).attrs[":else-if"] === "string";
+        const hasElseIf = typeof sib.attrs[":else-if"] === "string";
         const hasElse = Object.prototype.hasOwnProperty.call(
-          (sib as any).attrs,
+          sib.attrs,
           ":else"
         );
         if (!hasElseIf && !hasElse) break;
         if (hasElseIf) {
-          conds.push((sib as any).attrs[":else-if"]);
-          branches.push(sib.children);
-          j++;
-          continue;
-        }
-        if (hasElse) {
-          conds.push("true");
-          branches.push(sib.children);
-          j++;
-          break;
-        }
-      }
-
-      // factories for each branch (inline -> inline again)
-      const makeFns = branches.map((b) => emitBlockFactory(b));
-      const thenFactory = makeFns[0];
-      const elseChain =
-        emitIfChainFactory(conds, makeFns, 1) ?? emitEmptyBlockFactory();
-
-      linesBindings.push(
-        `__stops.push(bindIf(${parentVar}, () => (${conds[0]}), ${thenFactory}, ${elseChain}));`
-      );
-      return j - 1; // last consumed index
-    }
-
-    function inlineEmitSwitchCluster(
-      switchExpr: string,
-      parentVar: string,
-      siblings: Node[],
-      startIndex: number
-    ): number {
-      use("bindSwitch");
-
-      const branches: { when: string; factory: string }[] = [];
-      let elseFactory: string | null = null;
-
-      let j = startIndex + 1;
-      while (j < siblings.length) {
-        const sib = siblings[j];
-        if (sib.type !== "el" || sib.tag !== "template") break;
-
-        const hasCase = Object.prototype.hasOwnProperty.call(
-          (sib as any).attrs,
-          ":case"
-        );
-        const hasDefault = Object.prototype.hasOwnProperty.call(
-          (sib as any).attrs,
-          ":default"
-        );
-
-        if (!hasCase && !hasDefault) break;
-
-        if (hasCase) {
-          const caseExpr = ((sib as any).attrs[":case"] ?? "").trim();
-          const f = emitBlockFactory(sib.children);
           branches.push({
-            when: `() => ((${switchExpr}) === (${caseExpr}))`,
-            factory: f,
+            when: `() => ((${sib.attrs[":else-if"]}))`,
+            children: sib.children,
           });
           j++;
           continue;
         }
-
-        if (hasDefault) {
-          elseFactory = emitBlockFactory(sib.children);
+        if (hasElse) {
+          elseChildren = sib.children;
           j++;
-          break; // default ends cluster
+          break;
         }
       }
+      return { branches, elseChildren, consumedTo: j - 1 };
+    }
 
-      if (branches.length === 0 && !elseFactory) return startIndex;
+    // normalize :switch / :case / :default into bindSwitch schema
+    function collectSwitchClusterInline(
+      switchExpr: string,
+      siblings: Node[],
+      startIndex: number
+    ): {
+      branches: { when: string; children: Node[] }[];
+      elseChildren?: Node[];
+      consumedTo: number;
+    } {
+      const branches: { when: string; children: Node[] }[] = [];
+      let elseChildren: Node[] | undefined = undefined;
 
-      const arrayLiteral = `[${branches
-        .map((b) => `{ when: (${b.when}), factory: (${b.factory}) }`)
+      let j = startIndex + 1;
+      while (j < siblings.length) {
+        const sib = siblings[j] as any;
+        if (sib.type !== "el" || sib.tag !== "template") break;
+
+        const hasCase = Object.prototype.hasOwnProperty.call(
+          sib.attrs,
+          ":case"
+        );
+        const hasDefault = Object.prototype.hasOwnProperty.call(
+          sib.attrs,
+          ":default"
+        );
+        if (!hasCase && !hasDefault) break;
+
+        if (hasCase) {
+          const c = (sib.attrs[":case"] ?? "").trim();
+          branches.push({
+            when: `() => (((${switchExpr})) === ((${c})))`,
+            children: sib.children,
+          });
+          j++;
+          continue;
+        }
+        if (hasDefault) {
+          elseChildren = sib.children;
+          j++;
+          break;
+        }
+      }
+      return { branches, elseChildren, consumedTo: j - 1 };
+    }
+
+    function inlineEmitSwitchCall(
+      parentVar: string,
+      branches: { when: string; children: Node[] }[],
+      elseChildren?: Node[]
+    ) {
+      use("bindSwitch");
+      const arr = `[${branches
+        .map(
+          (b) =>
+            `{ when: (${b.when}), factory: (${emitBlockFactory(b.children)}) }`
+        )
         .join(", ")}]`;
-
-      if (elseFactory) {
+      if (elseChildren && elseChildren.length) {
+        const ef = emitBlockFactory(elseChildren);
         linesBindings.push(
-          `__stops.push(bindSwitch(${parentVar}, ${arrayLiteral}, ${elseFactory}));`
+          `__stops.push(bindSwitch(${parentVar}, ${arr}, ${ef}));`
         );
       } else {
-        linesBindings.push(
-          `__stops.push(bindSwitch(${parentVar}, ${arrayLiteral}));`
-        );
+        linesBindings.push(`__stops.push(bindSwitch(${parentVar}, ${arr}));`);
       }
-      return j - 1;
     }
 
     function walkInline(
@@ -206,21 +207,23 @@ export function compileTemplateToIR(
       idx: number,
       ROOT: string
     ): number {
-      // INLINE control-flow clusters (template :if / :switch)
-      if (
-        n.type === "el" &&
-        n.tag === "template" &&
-        typeof (n as any).attrs[":if"] === "string"
-      ) {
-        return inlineEmitIfCluster(parentVar, siblings, idx);
-      }
-      if (
-        n.type === "el" &&
-        n.tag === "template" &&
-        typeof (n as any).attrs[":switch"] === "string"
-      ) {
-        const sw = (n as any).attrs[":switch"];
-        return inlineEmitSwitchCluster(sw, parentVar, siblings, idx);
+      // INLINE control-flow clusters: unify to bindSwitch
+      if (n.type === "el" && n.tag === "template") {
+        const attrs: any = n.attrs || {};
+        if (typeof attrs[":if"] === "string") {
+          const { branches, elseChildren, consumedTo } = collectIfClusterInline(
+            siblings,
+            idx
+          );
+          inlineEmitSwitchCall(parentVar, branches, elseChildren);
+          return consumedTo;
+        }
+        if (typeof attrs[":switch"] === "string") {
+          const { branches, elseChildren, consumedTo } =
+            collectSwitchClusterInline(attrs[":switch"], siblings, idx);
+          inlineEmitSwitchCall(parentVar, branches, elseChildren);
+          return consumedTo;
+        }
       }
 
       if (n.type === "text") {
@@ -348,11 +351,9 @@ export function compileTemplateToIR(
       }
 
       // descend into children of normal element
-      if ((n as any).children) {
-        const kids = (n as any).children as Node[];
-        for (let i = 0; i < kids.length; i++) {
-          i = walkInline(kids[i], el, kids, i, ROOT);
-        }
+      const kids = (n as any).children as Node[];
+      for (let i = 0; i < kids.length; i++) {
+        i = walkInline(kids[i], el, kids, i, ROOT);
       }
 
       insertLine(el, parentVar, ROOT);
@@ -397,209 +398,151 @@ export function compileTemplateToIR(
 }`;
   }
 
-  // ---- helper: empty block factory (no-op) ----
+  // ---- empty block factory ----
   function emitEmptyBlockFactory(label = "empty") {
     return `() => ({ el: Dom.createAnchor(${JSON.stringify(
       label
     )}), mount(){}, destroy(){} })`;
   }
 
-  // ---- helper: reactive chain for else-if branches ----
-  function emitIfChainFactory(
-    conds: string[],
-    makeFns: string[],
-    start: number
-  ): string | undefined {
-    use("bindIf");
-    use("Dom");
-
-    const last = conds.length - 1;
-    if (start > last) return undefined;
-
-    if (start === last && conds[start] === "true") {
-      return makeFns[start];
-    }
-
-    if (start === last) {
-      const thenF = makeFns[start];
-      const empty = emitEmptyBlockFactory("if-empty");
-      return `() => {
-  const __stops = [];
-  const __anchor = Dom.createAnchor('if-chain');
-  return {
-    el: __anchor,
-    mount(parent, anchorNode) {
-      Dom.insert(__anchor, parent, anchorNode ?? null);
-      __stops.push(bindIf(parent, () => (${conds[start]}), ${thenF}, ${empty}));
-    },
-    destroy() {
-      for (let i = __stops.length - 1; i >= 0; i--) { try { __stops[i](); } catch {} }
-      Dom.remove(__anchor);
-    }
-  };
-}`;
-    }
-
-    const thenF = makeFns[start];
-    const elseF =
-      emitIfChainFactory(conds, makeFns, start + 1) ?? emitEmptyBlockFactory();
-
-    return `() => {
-  const __stops = [];
-  const __anchor = Dom.createAnchor('if-chain');
-  return {
-    el: __anchor,
-    mount(parent, anchorNode) {
-      Dom.insert(__anchor, parent, anchorNode ?? null);
-      __stops.push(bindIf(parent, () => (${conds[start]}), ${thenF}, ${elseF}));
-    },
-    destroy() {
-      for (let i = __stops.length - 1; i >= 0; i--) { try { __stops[i](); } catch {} }
-      Dom.remove(__anchor);
-    }
-  };
-}`;
-  }
-
-  // ---- compile sibling-level :switch cluster into bindSwitch(...) ----
-  function compileSwitchCluster(
-    switchExpr: string,
+  // ---- top/sibling-level collectors (same shape as inline ones) ----
+  function collectIfCluster(
     siblings: Node[],
-    startIndex: number,
-    parentVar: string
-  ): { consumedTo: number } {
-    use("bindSwitch");
+    startIndex: number
+  ): {
+    branches: { when: string; children: Node[] }[];
+    elseChildren?: Node[];
+    consumedTo: number;
+  } {
+    const first = siblings[startIndex] as any;
+    const branches: { when: string; children: Node[] }[] = [];
+    let elseChildren: Node[] | undefined = undefined;
 
-    const branches: { when: string; factory: string }[] = [];
-    let elseFactory: string | null = null;
+    branches.push({
+      when: `() => ((${first.attrs[":if"]}))`,
+      children: first.children,
+    });
 
     let j = startIndex + 1;
     while (j < siblings.length) {
-      const sib = siblings[j];
+      const sib = siblings[j] as any;
+      if (sib.type !== "el" || sib.tag !== "template") break;
+      const hasElseIf = typeof sib.attrs[":else-if"] === "string";
+      const hasElse = Object.prototype.hasOwnProperty.call(sib.attrs, ":else");
+      if (!hasElseIf && !hasElse) break;
+      if (hasElseIf) {
+        branches.push({
+          when: `() => ((${sib.attrs[":else-if"]}))`,
+          children: sib.children,
+        });
+        j++;
+        continue;
+      }
+      if (hasElse) {
+        elseChildren = sib.children;
+        j++;
+        break;
+      }
+    }
+    return { branches, elseChildren, consumedTo: j - 1 };
+  }
+
+  function collectSwitchCluster(
+    switchExpr: string,
+    siblings: Node[],
+    startIndex: number
+  ): {
+    branches: { when: string; children: Node[] }[];
+    elseChildren?: Node[];
+    consumedTo: number;
+  } {
+    const branches: { when: string; children: Node[] }[] = [];
+    let elseChildren: Node[] | undefined = undefined;
+
+    let j = startIndex + 1;
+    while (j < siblings.length) {
+      const sib = siblings[j] as any;
       if (sib.type !== "el" || sib.tag !== "template") break;
 
-      const hasCase = Object.prototype.hasOwnProperty.call(
-        (sib as any).attrs,
-        ":case"
-      );
+      const hasCase = Object.prototype.hasOwnProperty.call(sib.attrs, ":case");
       const hasDefault = Object.prototype.hasOwnProperty.call(
-        (sib as any).attrs,
+        sib.attrs,
         ":default"
       );
       if (!hasCase && !hasDefault) break;
 
       if (hasCase) {
-        const caseExpr = ((sib as any).attrs[":case"] ?? "").trim();
-        const f = emitBlockFactory(sib.children);
+        const c = (sib.attrs[":case"] ?? "").trim();
         branches.push({
-          when: `() => ((${switchExpr}) === (${caseExpr}))`,
-          factory: f,
+          when: `() => (((${switchExpr})) === ((${c})))`,
+          children: sib.children,
         });
         j++;
         continue;
       }
       if (hasDefault) {
-        elseFactory = emitBlockFactory(sib.children);
+        elseChildren = sib.children;
         j++;
         break;
       }
     }
-
-    if (branches.length === 0 && !elseFactory) {
-      return { consumedTo: startIndex };
-    }
-
-    const arrayLiteral = `[${branches
-      .map((b) => `{ when: (${b.when}), factory: (${b.factory}) }`)
-      .join(", ")}]`;
-
-    if (elseFactory) {
-      mount.push(
-        `__stops.push(bindSwitch(${parentVar}, ${arrayLiteral}, ${elseFactory}));`
-      );
-    } else {
-      mount.push(`__stops.push(bindSwitch(${parentVar}, ${arrayLiteral}));`);
-    }
-
-    return { consumedTo: j - 1 };
+    return { branches, elseChildren, consumedTo: j - 1 };
   }
 
-  // ---- main walker with support for <template :if>, :else-if, :else and :switch ----
+  function emitSwitchCallToMount(
+    parentVar: string,
+    branches: { when: string; children: Node[] }[],
+    elseChildren?: Node[]
+  ) {
+    use("bindSwitch");
+    const arr = `[${branches
+      .map(
+        (b) =>
+          `{ when: (${b.when}), factory: (${emitBlockFactory(b.children)}) }`
+      )
+      .join(", ")}]`;
+    if (elseChildren && elseChildren.length) {
+      const ef = emitBlockFactory(elseChildren);
+      mount.push(`__stops.push(bindSwitch(${parentVar}, ${arr}, ${ef}));`);
+    } else {
+      mount.push(`__stops.push(bindSwitch(${parentVar}, ${arr}));`);
+    }
+  }
+
+  // ---- main walker (top-level + element children) ----
   function walk(
     n: Node,
     parentVar?: string,
     siblings?: Node[],
     idx?: number
   ): string {
-    // Handle <template :if> cluster at same level
+    // handle clusters at same level (top or inside an element)
     if (
       n.type === "el" &&
       n.tag === "template" &&
-      (n as any).attrs[":if"] &&
       parentVar &&
       siblings &&
       typeof idx === "number"
     ) {
-      const thenChildren = n.children;
-      const conds: string[] = [(n as any).attrs[":if"]];
-      const branches: Node[][] = [thenChildren];
-
-      // consume following :else-if / :else
-      let j = idx + 1;
-      while (j < siblings.length) {
-        const sib = siblings[j];
-        if (sib.type !== "el" || sib.tag !== "template") break;
-        const hasElseIf = typeof (sib as any).attrs[":else-if"] === "string";
-        const hasElse = Object.prototype.hasOwnProperty.call(
-          (sib as any).attrs,
-          ":else"
+      const a: any = n.attrs || {};
+      if (typeof a[":if"] === "string") {
+        const { branches, elseChildren, consumedTo } = collectIfCluster(
+          siblings,
+          idx
         );
-        if (!hasElseIf && !hasElse) break;
-        if (hasElseIf) {
-          conds.push((sib as any).attrs[":else-if"]);
-          branches.push(sib.children);
-          j++;
-          continue;
-        }
-        if (hasElse) {
-          conds.push("true");
-          branches.push(sib.children);
-          j++;
-          break;
-        }
+        emitSwitchCallToMount(parentVar, branches, elseChildren);
+        // caller loop will skip consumed siblings
+        return parentVar;
       }
-
-      use("bindIf");
-
-      const makeFns = branches.map((b) => emitBlockFactory(b));
-      const thenFactory = makeFns[0];
-      const elseChain =
-        emitIfChainFactory(conds, makeFns, 1) ?? emitEmptyBlockFactory();
-
-      mount.push(
-        `__stops.push(bindIf(${parentVar}, () => (${conds[0]}), ${thenFactory}, ${elseChain}));`
-      );
-      return parentVar;
-    }
-
-    // Handle <template :switch="..."> cluster at same level
-    if (
-      n.type === "el" &&
-      n.tag === "template" &&
-      typeof (n as any).attrs[":switch"] === "string" &&
-      parentVar &&
-      siblings &&
-      typeof idx === "number"
-    ) {
-      const switchExpr = (n as any).attrs[":switch"];
-      const { consumedTo } = compileSwitchCluster(
-        switchExpr,
-        siblings,
-        idx,
-        parentVar
-      );
-      // We don't need to return a node; caller loop will skip consumed siblings.
-      return parentVar;
+      if (typeof a[":switch"] === "string") {
+        const { branches, elseChildren, consumedTo } = collectSwitchCluster(
+          a[":switch"],
+          siblings,
+          idx
+        );
+        emitSwitchCallToMount(parentVar, branches, elseChildren);
+        return parentVar;
+      }
     }
 
     if (n.type === "text") {
@@ -680,7 +623,7 @@ export function compileTemplateToIR(
           const condKeys = keyMods.map((km) => KEY_MODS[km]).flat();
           handler = `(e)=>{ if (!(${JSON.stringify(
             condKeys
-          )}.includes(e.key))) return; ${v} }`;
+          )}).includes(e.key)) return; ${v} }`;
         }
         if (behaviorMods.length) {
           handler = `withModifiers(${handler}, [${behaviorMods
@@ -706,45 +649,27 @@ export function compileTemplateToIR(
     for (let i = 0; i < n.children.length; i++) {
       const c = n.children[i];
 
-      // Handle nested <template :if> cluster and skip its else-siblings
-      if (
-        c.type === "el" &&
-        c.tag === "template" &&
-        typeof c.attrs[":if"] === "string"
-      ) {
-        void walk(c, el, n.children, i);
-
-        // Skip following :else-if / :else siblings in this cluster
-        let j = i + 1;
-        while (j < n.children.length) {
-          const sib = n.children[j];
-          if (sib.type !== "el" || sib.tag !== "template") break;
-          const hasElseIf = typeof sib.attrs[":else-if"] === "string";
-          const hasElse = Object.prototype.hasOwnProperty.call(
-            sib.attrs,
-            ":else"
+      if (c.type === "el" && c.tag === "template") {
+        const a: any = c.attrs || {};
+        if (typeof a[":if"] === "string") {
+          const { branches, elseChildren, consumedTo } = collectIfCluster(
+            n.children,
+            i
           );
-          if (!hasElseIf && !hasElse) break;
-          j++;
+          emitSwitchCallToMount(el, branches, elseChildren);
+          i = consumedTo;
+          continue;
         }
-        i = j - 1; // skip to last else/else-if
-        continue;
-      }
-
-      // Handle nested <template :switch> cluster
-      if (
-        c.type === "el" &&
-        c.tag === "template" &&
-        typeof c.attrs[":switch"] === "string"
-      ) {
-        const { consumedTo } = compileSwitchCluster(
-          c.attrs[":switch"],
-          n.children,
-          i,
-          el
-        );
-        i = consumedTo; // skip consumed :case/:default siblings
-        continue;
+        if (typeof a[":switch"] === "string") {
+          const { branches, elseChildren, consumedTo } = collectSwitchCluster(
+            a[":switch"],
+            n.children,
+            i
+          );
+          emitSwitchCallToMount(el, branches, elseChildren);
+          i = consumedTo;
+          continue;
+        }
       }
 
       // Normal child
@@ -763,55 +688,24 @@ export function compileTemplateToIR(
   for (let i = 0; i < ast.length; i++) {
     const n = ast[i];
 
-    // If an :if cluster appears at top-level, consume it and skip else-siblings
-    if (
-      n.type === "el" &&
-      n.tag === "template" &&
-      typeof n.attrs[":if"] === "string"
-    ) {
-      void walk(n, "target" as any, ast, i);
-
-      let j = i + 1;
-      while (j < ast.length) {
-        const sib = ast[j];
-        if (sib.type !== "el" || sib.tag !== "template") break;
-        const hasElseIf = typeof sib.attrs[":else-if"] === "string";
-        const hasElse = Object.prototype.hasOwnProperty.call(
-          sib.attrs,
-          ":else"
-        );
-        if (!hasElseIf && !hasElse) break;
-        j++;
+    if (n.type === "el" && n.tag === "template") {
+      const a: any = n.attrs || {};
+      if (typeof a[":if"] === "string") {
+        const { branches, elseChildren, consumedTo } = collectIfCluster(ast, i);
+        emitSwitchCallToMount("target" as any, branches, elseChildren);
+        i = consumedTo;
+        continue;
       }
-      i = j - 1;
-      continue;
-    }
-
-    // Top-level :switch cluster
-    if (
-      n.type === "el" &&
-      n.tag === "template" &&
-      typeof n.attrs[":switch"] === "string"
-    ) {
-      compileSwitchCluster(n.attrs[":switch"], ast, i, "target" as any);
-      // Skip :case / :default siblings
-      let j = i + 1;
-      while (j < ast.length) {
-        const sib = ast[j];
-        if (sib.type !== "el" || sib.tag !== "template") break;
-        const hasCase = Object.prototype.hasOwnProperty.call(
-          sib.attrs,
-          ":case"
+      if (typeof a[":switch"] === "string") {
+        const { branches, elseChildren, consumedTo } = collectSwitchCluster(
+          a[":switch"],
+          ast,
+          i
         );
-        const hasDefault = Object.prototype.hasOwnProperty.call(
-          sib.attrs,
-          ":default"
-        );
-        if (!hasCase && !hasDefault) break;
-        j++;
+        emitSwitchCallToMount("target" as any, branches, elseChildren);
+        i = consumedTo;
+        continue;
       }
-      i = j - 1;
-      continue;
     }
 
     const res = walk(n, undefined, ast, i);
@@ -836,7 +730,7 @@ export function compileTemplateToIR(
     bindings,
   };
 
-  // pass extra imports (e.g., bindIf, bindText, bindSwitch used inside inline factories)
+  // pass extra imports (bindSwitch + friends used inside factories)
   (ir as any).imports = Array.from(extraImports);
 
   return ir;

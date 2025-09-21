@@ -1,11 +1,12 @@
 // Minimal microtask-based job scheduler with deduping.
 // Used by effects to batch re-runs and avoid sync cascades.
 
+type jobType = () => void;
 const resolved = Promise.resolve();
-const queue = new Set<() => void>();
+const queue = new Set<jobType>();
 let isFlushing = false;
 
-export function queueJob(job: () => void): void {
+export function queueJob(job: jobType): void {
   queue.add(job);
   if (!isFlushing) {
     isFlushing = true;

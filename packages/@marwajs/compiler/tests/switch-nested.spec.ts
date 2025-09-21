@@ -1,6 +1,6 @@
 // tests/switch-nested.spec.ts
 import { describe, it, expect } from "vitest";
-import { createApp, nextTick } from "@marwajs/core";
+import { signal, createApp, nextTick } from "@marwajs/core";
 import { compileSFC } from "../src/sfc/compileSFC";
 import { evalCompiled } from "./test-utils";
 
@@ -9,7 +9,7 @@ describe("compiler nested :switch inside element", () => {
     const sfc = `
   <template>
     <div>
-      <p>outer</p>
+      <p>App</p>
       <template :switch="a()">
       </template>
       <template :case="'x'">
@@ -20,7 +20,9 @@ describe("compiler nested :switch inside element", () => {
       </template>
       <template :case="'y'"><span>outer-y</span></template>
       <template :default><span>outer-other</span></template>
-
+      <template :if="n()===100">
+        <p>n is 100</p>
+      </template>
       <button id="toggleA" @click="a.set(a()==='x'?'y':'x')">toggleA</button>
       <button id="incB" @click="b.set(b()+1)">incB</button>
     </div>
@@ -29,14 +31,17 @@ describe("compiler nested :switch inside element", () => {
     import { signal } from '@marwajs/core';
     const a = signal('x');
     const b = signal(0);
+    const n = props.n;
+    // let isLogged:boolean = false;
+    // if (!isLogged) { console.log('script run'); isLogged = true; }
   </script>`.trim();
 
     const { code } = compileSFC(sfc, "/virtual/SwitchNested.marwa");
     const Comp = await evalCompiled(code);
-
+    const n = signal(0);
     const host = document.createElement("div");
     const app = createApp(host);
-    const inst = Comp({}, { app });
+    const inst = Comp({ n }, { app });
     inst.mount(host);
     await nextTick();
 
@@ -59,14 +64,16 @@ describe("compiler nested :switch inside element", () => {
 
     // outer a='z' → outer-default
     (host.querySelector("#toggleA") as HTMLButtonElement).click(); // y -> x
-    (host.querySelector("#toggleA") as HTMLButtonElement).click(); // x -> y
-    (host.querySelector("#toggleA") as HTMLButtonElement).click(); // y -> x
-    // force z explicitly for clarity:
-    // @ts-ignore
-    inst.ctx?.scope?.a?.set?.("z");
     await nextTick();
-    expect(host.textContent).toContain("outer-other");
-
+    (host.querySelector("#toggleA") as HTMLButtonElement).click(); // x -> y
+    await nextTick();
+    (host.querySelector("#toggleA") as HTMLButtonElement).click(); // y -> x
+    await nextTick();
+    expect(host.textContent).toContain("inner-one");
+    n.set(100); // dummy change to force update
+    await nextTick();
+    expect(host.textContent).toContain("n is 100");
+    //console.log(inst);
     inst.destroy();
   });
 });
