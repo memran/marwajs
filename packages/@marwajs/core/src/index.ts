@@ -33,7 +33,8 @@ export {
   withModifiers,
   type ModelOptions,
 } from "./runtime/directives";
-export { bindFor, type Block } from "./runtime/list";
+export { type Block } from "./runtime/block";
+export { bindFor } from "./runtime/list";
 export {
   createRouter,
   defineRoutes,

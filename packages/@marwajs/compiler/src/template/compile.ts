@@ -1,3 +1,4 @@
+// packages/@marwajs/compiler/src/template/compile.ts
 import type { ComponentIR, Binding } from "../ir";
 
 type Node =
@@ -65,8 +66,11 @@ export function compileTemplateToIR(
     return "`" + parts.join("") + "`";
   }
 
-  // ---- block factory emitter (used by THEN / CASE / DEFAULT bodies) ----
-  function emitBlockFactory(children: Node[]): string {
+  // ---------- unified block factory (optionally parameterized) ----------
+  function emitBlockFactory(
+    children: Node[],
+    paramNames: string[] = []
+  ): string {
     use("Dom");
 
     const localId = (() => {
@@ -86,8 +90,7 @@ export function compileTemplateToIR(
       }
     }
 
-    // ---- unified cluster collection (INLINE) ----
-    // normalize :if / :else-if / :else into bindSwitch schema
+    // ---- INLINE clusters (if / switch) inside this block ----
     function collectIfClusterInline(
       siblings: Node[],
       startIndex: number
@@ -98,7 +101,7 @@ export function compileTemplateToIR(
     } {
       const first = siblings[startIndex] as any;
       const branches: { when: string; children: Node[] }[] = [];
-      let elseChildren: Node[] | undefined = undefined;
+      let elseChildren: Node[] | undefined;
 
       branches.push({
         when: `() => ((${first.attrs[":if"]}))`,
@@ -132,7 +135,6 @@ export function compileTemplateToIR(
       return { branches, elseChildren, consumedTo: j - 1 };
     }
 
-    // normalize :switch / :case / :default into bindSwitch schema
     function collectSwitchClusterInline(
       switchExpr: string,
       siblings: Node[],
@@ -143,13 +145,12 @@ export function compileTemplateToIR(
       consumedTo: number;
     } {
       const branches: { when: string; children: Node[] }[] = [];
-      let elseChildren: Node[] | undefined = undefined;
+      let elseChildren: Node[] | undefined;
 
       let j = startIndex + 1;
       while (j < siblings.length) {
         const sib = siblings[j] as any;
         if (sib.type !== "el" || sib.tag !== "template") break;
-
         const hasCase = Object.prototype.hasOwnProperty.call(
           sib.attrs,
           ":case"
@@ -207,10 +208,9 @@ export function compileTemplateToIR(
       idx: number,
       ROOT: string
     ): number {
-      // INLINE control-flow clusters: unify to bindSwitch
       if (n.type === "el" && n.tag === "template") {
-        const attrs: any = n.attrs || {};
-        if (typeof attrs[":if"] === "string") {
+        const a: any = n.attrs || {};
+        if (typeof a[":if"] === "string") {
           const { branches, elseChildren, consumedTo } = collectIfClusterInline(
             siblings,
             idx
@@ -218,11 +218,15 @@ export function compileTemplateToIR(
           inlineEmitSwitchCall(parentVar, branches, elseChildren);
           return consumedTo;
         }
-        if (typeof attrs[":switch"] === "string") {
+        if (typeof a[":switch"] === "string") {
           const { branches, elseChildren, consumedTo } =
-            collectSwitchClusterInline(attrs[":switch"], siblings, idx);
+            collectSwitchClusterInline(a[":switch"], siblings, idx);
           inlineEmitSwitchCall(parentVar, branches, elseChildren);
           return consumedTo;
+        }
+        if (typeof a[":for"] === "string") {
+          const consumed = inlineEmitFor(parentVar, n as any);
+          return Math.max(consumed, idx);
         }
       }
 
@@ -317,7 +321,7 @@ export function compileTemplateToIR(
             const condKeys = keyMods.map((km) => KEY_MODS[km]).flat();
             handler = `(e)=>{ if (!(${JSON.stringify(
               condKeys
-            )}.includes(e.key))) return; ${v} }`;
+            )}).includes(e.key)) return; ${v} }`;
           }
           if (behaviorMods.length) {
             handler = `withModifiers(${handler}, [${behaviorMods
@@ -350,7 +354,7 @@ export function compileTemplateToIR(
         );
       }
 
-      // descend into children of normal element
+      // descend into children
       const kids = (n as any).children as Node[];
       for (let i = 0; i < kids.length; i++) {
         i = walkInline(kids[i], el, kids, i, ROOT);
@@ -358,6 +362,33 @@ export function compileTemplateToIR(
 
       insertLine(el, parentVar, ROOT);
       return idx;
+    }
+
+    // inline :for handler: emits bindFor into linesBindings
+    function inlineEmitFor(parentVar: string, node: any): number {
+      const a = node.attrs || {};
+      if (typeof a[":for"] !== "string") return -1;
+      use("bindFor");
+
+      const parsed = parseForExpression(a[":for"]);
+      const itemVar = parsed.item;
+      const idxVar = parsed.index ?? "__i";
+      const listExpr = parsed.list;
+
+      // optional key
+      const keyExpr =
+        typeof a[":key"] === "string" && a[":key"].trim().length
+          ? a[":key"].trim()
+          : null;
+
+      const getItems = `() => ((${listExpr}) || [])`;
+      const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
+      const blockFactory = emitBlockFactory(node.children, [itemVar, idxVar]);
+
+      linesBindings.push(
+        `__stops.push(bindFor(${parentVar}, ${getItems}, ${keyOf}, ${blockFactory}));`
+      );
+      return 0; // consumed only this node
     }
 
     const rootContainer = localId("frag");
@@ -375,12 +406,12 @@ export function compileTemplateToIR(
       `Dom.remove(${anchor});`,
     ];
 
-    // walk block children with inline cluster support
     for (let i = 0; i < children.length; i++) {
       i = walkInline(children[i], rootContainer, children, i, ROOT);
     }
 
-    return `() => {
+    const params = paramNames.length ? `(${paramNames.join(", ")})` : `()`;
+    return `${params} => {
   const __stops = [];
   const ${anchor} = Dom.createAnchor('block');
   ${linesCreate.join("\n  ")}
@@ -405,7 +436,7 @@ export function compileTemplateToIR(
     )}), mount(){}, destroy(){} })`;
   }
 
-  // ---- top/sibling-level collectors (same shape as inline ones) ----
+  // ---- collectors for top/sibling-level clusters (if/switch only) ----
   function collectIfCluster(
     siblings: Node[],
     startIndex: number
@@ -416,7 +447,7 @@ export function compileTemplateToIR(
   } {
     const first = siblings[startIndex] as any;
     const branches: { when: string; children: Node[] }[] = [];
-    let elseChildren: Node[] | undefined = undefined;
+    let elseChildren: Node[] | undefined;
 
     branches.push({
       when: `() => ((${first.attrs[":if"]}))`,
@@ -457,13 +488,12 @@ export function compileTemplateToIR(
     consumedTo: number;
   } {
     const branches: { when: string; children: Node[] }[] = [];
-    let elseChildren: Node[] | undefined = undefined;
+    let elseChildren: Node[] | undefined;
 
     let j = startIndex + 1;
     while (j < siblings.length) {
       const sib = siblings[j] as any;
       if (sib.type !== "el" || sib.tag !== "template") break;
-
       const hasCase = Object.prototype.hasOwnProperty.call(sib.attrs, ":case");
       const hasDefault = Object.prototype.hasOwnProperty.call(
         sib.attrs,
@@ -509,6 +539,26 @@ export function compileTemplateToIR(
     }
   }
 
+  // ---- :for expression parser ----
+  function parseForExpression(src: string): {
+    item: string;
+    index?: string;
+    list: string;
+  } {
+    // Matches "(item, i) in listExpr" | "item in listExpr"
+    const re =
+      /^\s*(?:\(\s*([A-Za-z_$][\w$]*)\s*,\s*([A-Za-z_$][\w$]*)\s*\)|([A-Za-z_$][\w$]*))\s+in\s+([\s\S]+?)\s*$/;
+    const m = re.exec(src);
+    if (!m) {
+      // Fallback: treat whole as list, with item "item" and index "__i"
+      return { item: "item", index: "__i", list: src.trim() };
+    }
+    const item = (m[1] || m[3]).trim();
+    const index = m[2] ? m[2].trim() : undefined;
+    const list = m[4].trim();
+    return { item, index, list };
+  }
+
   // ---- main walker (top-level + element children) ----
   function walk(
     n: Node,
@@ -516,7 +566,7 @@ export function compileTemplateToIR(
     siblings?: Node[],
     idx?: number
   ): string {
-    // handle clusters at same level (top or inside an element)
+    // handle clusters at same level (:if / :switch) → bindSwitch
     if (
       n.type === "el" &&
       n.tag === "template" &&
@@ -531,7 +581,6 @@ export function compileTemplateToIR(
           idx
         );
         emitSwitchCallToMount(parentVar, branches, elseChildren);
-        // caller loop will skip consumed siblings
         return parentVar;
       }
       if (typeof a[":switch"] === "string") {
@@ -541,6 +590,29 @@ export function compileTemplateToIR(
           idx
         );
         emitSwitchCallToMount(parentVar, branches, elseChildren);
+        return parentVar;
+      }
+      if (typeof a[":for"] === "string") {
+        // Single node (no sibling cluster)
+        use("bindFor");
+
+        const parsed = parseForExpression(a[":for"]);
+        const itemVar = parsed.item;
+        const idxVar = parsed.index ?? "__i";
+        const listExpr = parsed.list;
+
+        const keyExpr =
+          typeof a[":key"] === "string" && a[":key"].trim().length
+            ? a[":key"].trim()
+            : null;
+
+        const getItems = `() => ((${listExpr}) || [])`;
+        const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
+        const blockFactory = emitBlockFactory(n.children, [itemVar, idxVar]);
+
+        mount.push(
+          `__stops.push(bindFor(${parentVar}, ${getItems}, ${keyOf}, ${blockFactory}));`
+        );
         return parentVar;
       }
     }
@@ -670,6 +742,29 @@ export function compileTemplateToIR(
           i = consumedTo;
           continue;
         }
+        if (typeof a[":for"] === "string") {
+          use("bindFor");
+
+          const parsed = parseForExpression(a[":for"]);
+          const itemVar = parsed.item;
+          const idxVar = parsed.index ?? "__i";
+          const listExpr = parsed.list;
+
+          const keyExpr =
+            typeof a[":key"] === "string" && a[":key"].trim().length
+              ? a[":key"].trim()
+              : null;
+
+          const getItems = `() => ((${listExpr}) || [])`;
+          const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
+          const blockFactory = emitBlockFactory(c.children, [itemVar, idxVar]);
+
+          mount.push(
+            `__stops.push(bindFor(${el}, ${getItems}, ${keyOf}, ${blockFactory}));`
+          );
+          i = i; // consumed just this one node
+          continue;
+        }
       }
 
       // Normal child
@@ -706,12 +801,37 @@ export function compileTemplateToIR(
         i = consumedTo;
         continue;
       }
+      if (typeof a[":for"] === "string") {
+        use("bindFor");
+
+        const parsed = parseForExpression(a[":for"]);
+        const itemVar = parsed.item;
+        const idxVar = parsed.index ?? "__i";
+        const listExpr = parsed.list;
+
+        const keyExpr =
+          typeof a[":key"] === "string" && a[":key"].trim().length
+            ? a[":key"].trim()
+            : null;
+
+        const getItems = `() => ((${listExpr}) || [])`;
+        const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
+        const blockFactory = emitBlockFactory(n.children, [itemVar, idxVar]);
+
+        mount.push(
+          `__stops.push(bindFor(target, ${getItems}, ${keyOf}, ${blockFactory}));`
+        );
+        continue;
+      }
     }
 
     const res = walk(n, undefined, ast, i);
     if (n.type === "el") {
       if (
-        !(n.tag === "template" && (":if" in n.attrs || ":switch" in n.attrs))
+        !(
+          n.tag === "template" &&
+          (":if" in n.attrs || ":switch" in n.attrs || ":for" in n.attrs)
+        )
       ) {
         roots.push(res);
       }
@@ -730,7 +850,7 @@ export function compileTemplateToIR(
     bindings,
   };
 
-  // pass extra imports (bindSwitch + friends used inside factories)
+  // pass extra imports (bindSwitch/bindFor/etc. used inside factories)
   (ir as any).imports = Array.from(extraImports);
 
   return ir;

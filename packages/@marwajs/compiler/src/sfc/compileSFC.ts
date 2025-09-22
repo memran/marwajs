@@ -62,10 +62,11 @@ export function compileSFC(code: string, file: string): { code: string } {
 
   // === Script (transpile first if TS), then split ===
   const rawScript = sfc.script?.content ?? "";
+
   const scriptLang = sfc.script?.attrs?.lang ?? null;
 
   // Transpile the WHOLE script so type-only imports & annotations vanish
-  const scriptJS = transpileScriptMaybe(rawScript, scriptLang);
+  const scriptJS = transpileScriptMaybe(rawScript, scriptLang as string | null);
 
   // Now split transpiled JS into hoisted imports & setup body
   const { hoisted, setup } = splitScript(scriptJS);

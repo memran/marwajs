@@ -1,6 +1,6 @@
 import { effect, stop } from "../reactivity/effect";
 import * as Dom from "./dom";
-import type { Block } from "./list";
+import type { Block } from "./block";
 
 /**
  * Conditional mount/destroy with a stable [start, end) region.

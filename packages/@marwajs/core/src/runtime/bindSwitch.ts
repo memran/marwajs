@@ -1,6 +1,6 @@
 import { effect, stop } from "../reactivity/effect";
 import * as Dom from "./dom";
-import type { Block } from "./list";
+import type { Block } from "./block";
 
 export type SwitchBranch = {
   when: () => any; // truthy = match

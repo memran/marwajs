@@ -38,6 +38,7 @@ export function generateComponent(
   // Helper names we might emit outside of ir.bindings
   [
     "bindIf",
+    "bindFor",
     "bindSwitch",
     "bindText",
     "bindHTML",
@@ -80,8 +81,6 @@ export default defineComponent((props, ctx) => {
     }
   };
 });
-
-function __pushStop(fn) { __stops.push(fn); }
 `.trim();
 
   return { code };

@@ -1,16 +1,6 @@
 import * as Dom from "./dom";
 import { effect, stop } from "../reactivity/effect";
-
-export interface Block<T = any> {
-  /** The root DOM node for this block; used for moving/reordering. */
-  el: Node;
-  /** Insert the block under parent before anchor (or append). */
-  mount(parent: Node, anchor?: Node | null): void;
-  /** Optional update with new item/view + index. */
-  patch?(value: T, index: number): void;
-  /** Destroy resources (effects, listeners) and remove DOM if needed. */
-  destroy(): void;
-}
+import type { Block } from "./block";
 
 /**
  * Keyed list binding (for `:for`).
@@ -30,12 +20,14 @@ export function bindFor<T, K, V = T>(
   viewOf: (item: T, index: number) => V,
   makeBlock: (view: V, index: number) => Block<V>
 ): () => void;
+
 export function bindFor<T, K>(
   parent: Node,
   getItems: () => T[],
   keyOf: (item: T, index: number) => K,
   makeBlock: (view: T, index: number) => Block<T>
 ): () => void;
+
 export function bindFor<T, K, V = T>(
   parent: Node,
   getItems: () => T[],
