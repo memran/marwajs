@@ -113,6 +113,7 @@ export interface ModelOptions {
   trim?: boolean;
   number?: boolean;
   type?: "text" | "checkbox" | "radio" | "select";
+  debounce?: number; // ← ms; only used for text/textarea on "input" events
 }
 
 export function bindModel(
@@ -147,7 +148,26 @@ export function bindModel(
   // 2) model <- view
   const isFormChange =
     type === "checkbox" || type === "radio" || type === "select";
+  //const isInputLike = !isFormChange && type !== "select";
+  const isInputLike = !isFormChange;
+
   const evt = isFormChange ? "change" : opts.lazy ? "change" : "input";
+
+  // Debounced setter (only for input/textarea on "input" events)
+  let timer: any = null;
+  const useDebounce =
+    isInputLike &&
+    evt === "input" &&
+    typeof opts.debounce === "number" &&
+    opts.debounce > 0;
+  const applySet = (v: any) => {
+    if (!useDebounce) {
+      set(v);
+      return;
+    }
+    clearTimeout(timer);
+    timer = setTimeout(() => set(v), opts.debounce);
+  };
 
   const off = on(app, el as HTMLElement, evt, () => {
     let v: any;
@@ -166,12 +186,16 @@ export function bindModel(
         if (!Number.isNaN(n)) v = n;
       }
     }
-    set(v);
+    applySet(v);
   });
 
   return () => {
     off();
     stop(stopView);
+    if (timer) {
+      clearTimeout(timer); // clean pending debounce
+      timer = null;
+    }
   };
 }
 
