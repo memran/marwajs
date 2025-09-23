@@ -55,7 +55,7 @@ onMount(() => {
 
     // Child span should render initial provided value 'A'
     const span = host.querySelector("#slot") as HTMLSpanElement;
-    console.log(span?.textContent);
+    //console.log(span?.textContent);
     expect(span.textContent).toContain("MarwaJS");
     expect(span).toBeTruthy();
     //initial value of val
@@ -66,6 +66,29 @@ onMount(() => {
     (host.querySelector("#b") as HTMLButtonElement).click();
     await nextTick();
     expect(val.textContent).toContain("B");
+    inst.destroy();
+  });
+
+  it("uses default value when no provider exists", async () => {
+    const sfc = `
+<template>
+  <div id="v">{{ v }}</div>
+</template>
+<script>
+import { inject } from '@marwajs/core';
+const v = inject('missing-key', 'fallback');
+</script>`.trim();
+
+    const { code } = compileSFC(sfc, "/virtual/InjectDefault.marwa");
+    const Comp = await evalCompiled(code);
+
+    const host = document.createElement("div");
+    const app = createApp(host);
+    const inst = Comp({}, { app });
+    inst.mount(host);
+    await nextTick();
+
+    expect(host.querySelector("#v")!.textContent).toContain("fallback");
     inst.destroy();
   });
 });
