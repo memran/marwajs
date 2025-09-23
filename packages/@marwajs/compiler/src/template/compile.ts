@@ -48,7 +48,6 @@ export function compileTemplateToIR(
   const vid = (p: string) => `_${p}${++id}`;
 
   function compileTextExpr(raw: string): string | null {
-    // Split by {{ expr }} and return a template literal expression
     const re = /\{\{\s*([^}]+?)\s*\}\}/g;
     let last = 0;
     let m: RegExpExecArray | null;
@@ -60,7 +59,7 @@ export function compileTemplateToIR(
       last = m.index + m[0].length;
     }
     const tail = raw.slice(last);
-    if (!parts.length && !tail) return null; // no dynamic
+    if (!parts.length && !tail) return null;
     if (tail) parts.push(tail.replace(/`/g, "\\`"));
     if (parts.length === 1 && !/\$\{/.test(parts[0])) return null;
     return "`" + parts.join("") + "`";
@@ -90,7 +89,7 @@ export function compileTemplateToIR(
       }
     }
 
-    // ---- INLINE clusters (if / switch) inside this block ----
+    // ---- INLINE clusters (if / switch / for / mount) inside this block ----
     function collectIfClusterInline(
       siblings: Node[],
       startIndex: number
@@ -102,12 +101,10 @@ export function compileTemplateToIR(
       const first = siblings[startIndex] as any;
       const branches: { when: string; children: Node[] }[] = [];
       let elseChildren: Node[] | undefined;
-
       branches.push({
         when: `() => ((${first.attrs[":if"]}))`,
         children: first.children,
       });
-
       let j = startIndex + 1;
       while (j < siblings.length) {
         const sib = siblings[j] as any;
@@ -146,7 +143,6 @@ export function compileTemplateToIR(
     } {
       const branches: { when: string; children: Node[] }[] = [];
       let elseChildren: Node[] | undefined;
-
       let j = startIndex + 1;
       while (j < siblings.length) {
         const sib = siblings[j] as any;
@@ -160,7 +156,6 @@ export function compileTemplateToIR(
           ":default"
         );
         if (!hasCase && !hasDefault) break;
-
         if (hasCase) {
           const c = (sib.attrs[":case"] ?? "").trim();
           branches.push({
@@ -201,6 +196,102 @@ export function compileTemplateToIR(
       }
     }
 
+    // === :for (inline) ===
+    function inlineEmitFor(parentVar: string, node: any): number {
+      const a = node.attrs || {};
+      if (typeof a[":for"] !== "string") return -1;
+      use("bindFor");
+
+      const parsed = parseForExpression(a[":for"]);
+      const itemVar = parsed.item;
+      const idxVar = parsed.index ?? "__i";
+      const listExpr = parsed.list;
+
+      const keyExpr =
+        typeof a[":key"] === "string" && a[":key"].trim().length
+          ? a[":key"].trim()
+          : null;
+
+      const getItems = `() => ((${listExpr}) || [])`;
+      const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
+      const blockFactory = emitBlockFactory(node.children, [itemVar, idxVar]);
+
+      linesBindings.push(
+        `__stops.push(bindFor(${parentVar}, ${getItems}, ${keyOf}, ${blockFactory}));`
+      );
+      return 0;
+    }
+
+    // === :mount (inline) ===  Parent→Child props + Child→Parent events (via onX props)
+    function inlineEmitMount(parentVar: string, node: any): number {
+      const a = node.attrs || {};
+      if (typeof a[":mount"] !== "string") return -1;
+
+      // Gather props:
+      // - :props="expr" as base
+      // - every :foo="bar" becomes { foo: bar }
+      // - every @ev="handler($event)" becomes { onEv: (e)=>{ handler(e) } }
+      const baseProps =
+        typeof a[":props"] === "string" ? a[":props"].trim() : "{}";
+
+      const literalPairs: string[] = [];
+
+      // attribute props
+      for (const k in a) {
+        if (k === ":mount" || k === ":props") continue;
+        if (k.startsWith(":")) {
+          const pname = k.slice(1);
+          literalPairs.push(`${JSON.stringify(pname)}: (${a[k]})`);
+        }
+      }
+      // event props
+      for (const k in a) {
+        if (!k.startsWith("@")) continue;
+        const raw = k.slice(1);
+        const parts = raw.split(".");
+        const ev = parts.shift()!; // ignore behavior/key mods on component events
+        const propName = "on" + ev.charAt(0).toUpperCase() + ev.slice(1);
+        const body = a[k] || "";
+        // support $event passthrough
+        const handler = `(e)=>{ ${body.replace(/\$event/g, "e")} }`;
+        literalPairs.push(`${JSON.stringify(propName)}: ${handler}`);
+      }
+
+      const mergedProps =
+        literalPairs.length > 0
+          ? `Object.assign({}, (${baseProps}), { ${literalPairs.join(", ")} })`
+          : `(${baseProps})`;
+
+      // Emit reactive mount+patch
+      // effect is used so props can be reactive; child.patch runs when changed.
+      use("effect");
+      use("stop");
+
+      const childVar = localId("child");
+      const runVar = localId("run");
+
+      linesBindings.push(
+        `
+{
+  let ${childVar} = null;
+  const ${runVar} = effect(() => {
+    const __p = (${mergedProps});
+    if (!${childVar}) {
+      const __C = (${a[":mount"]});
+      ${childVar} = __C(__p, { app: ctx.app });
+      ${childVar}.mount(${parentVar}, null);
+    } else {
+      ${childVar}.patch && ${childVar}.patch(__p);
+    }
+  });
+  __stops.push(() => { stop(${runVar}); try { ${childVar} && ${childVar}.destroy && ${childVar}.destroy(); } catch {} });
+}
+`.trim()
+      );
+
+      return 0;
+    }
+
     function walkInline(
       n: Node,
       parentVar: string,
@@ -209,7 +300,7 @@ export function compileTemplateToIR(
       ROOT: string
     ): number {
       if (n.type === "el" && n.tag === "template") {
-        const a: any = n.attrs || {};
+        const a: any = (n as any).attrs || {};
         if (typeof a[":if"] === "string") {
           const { branches, elseChildren, consumedTo } = collectIfClusterInline(
             siblings,
@@ -224,10 +315,11 @@ export function compileTemplateToIR(
           inlineEmitSwitchCall(parentVar, branches, elseChildren);
           return consumedTo;
         }
-        if (typeof a[":for"] === "string") {
-          const consumed = inlineEmitFor(parentVar, n as any);
-          return Math.max(consumed, idx);
-        }
+        const f = inlineEmitFor(parentVar, n as any);
+        if (f >= 0) return idx;
+
+        const m = inlineEmitMount(parentVar, n as any);
+        if (m >= 0) return idx;
       }
 
       if (n.type === "text") {
@@ -354,7 +446,6 @@ export function compileTemplateToIR(
         );
       }
 
-      // descend into children
       const kids = (n as any).children as Node[];
       for (let i = 0; i < kids.length; i++) {
         i = walkInline(kids[i], el, kids, i, ROOT);
@@ -362,33 +453,6 @@ export function compileTemplateToIR(
 
       insertLine(el, parentVar, ROOT);
       return idx;
-    }
-
-    // inline :for handler: emits bindFor into linesBindings
-    function inlineEmitFor(parentVar: string, node: any): number {
-      const a = node.attrs || {};
-      if (typeof a[":for"] !== "string") return -1;
-      use("bindFor");
-
-      const parsed = parseForExpression(a[":for"]);
-      const itemVar = parsed.item;
-      const idxVar = parsed.index ?? "__i";
-      const listExpr = parsed.list;
-
-      // optional key
-      const keyExpr =
-        typeof a[":key"] === "string" && a[":key"].trim().length
-          ? a[":key"].trim()
-          : null;
-
-      const getItems = `() => ((${listExpr}) || [])`;
-      const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
-      const blockFactory = emitBlockFactory(node.children, [itemVar, idxVar]);
-
-      linesBindings.push(
-        `__stops.push(bindFor(${parentVar}, ${getItems}, ${keyOf}, ${blockFactory}));`
-      );
-      return 0; // consumed only this node
     }
 
     const rootContainer = localId("frag");
@@ -429,7 +493,6 @@ export function compileTemplateToIR(
 }`;
   }
 
-  // ---- empty block factory ----
   function emitEmptyBlockFactory(label = "empty") {
     return `() => ({ el: Dom.createAnchor(${JSON.stringify(
       label
@@ -448,12 +511,10 @@ export function compileTemplateToIR(
     const first = siblings[startIndex] as any;
     const branches: { when: string; children: Node[] }[] = [];
     let elseChildren: Node[] | undefined;
-
     branches.push({
       when: `() => ((${first.attrs[":if"]}))`,
       children: first.children,
     });
-
     let j = startIndex + 1;
     while (j < siblings.length) {
       const sib = siblings[j] as any;
@@ -489,7 +550,6 @@ export function compileTemplateToIR(
   } {
     const branches: { when: string; children: Node[] }[] = [];
     let elseChildren: Node[] | undefined;
-
     let j = startIndex + 1;
     while (j < siblings.length) {
       const sib = siblings[j] as any;
@@ -500,7 +560,6 @@ export function compileTemplateToIR(
         ":default"
       );
       if (!hasCase && !hasDefault) break;
-
       if (hasCase) {
         const c = (sib.attrs[":case"] ?? "").trim();
         branches.push({
@@ -539,20 +598,16 @@ export function compileTemplateToIR(
     }
   }
 
-  // ---- :for expression parser ----
+  // ---- :for parser ----
   function parseForExpression(src: string): {
     item: string;
     index?: string;
     list: string;
   } {
-    // Matches "(item, i) in listExpr" | "item in listExpr"
     const re =
       /^\s*(?:\(\s*([A-Za-z_$][\w$]*)\s*,\s*([A-Za-z_$][\w$]*)\s*\)|([A-Za-z_$][\w$]*))\s+in\s+([\s\S]+?)\s*$/;
     const m = re.exec(src);
-    if (!m) {
-      // Fallback: treat whole as list, with item "item" and index "__i"
-      return { item: "item", index: "__i", list: src.trim() };
-    }
+    if (!m) return { item: "item", index: "__i", list: src.trim() };
     const item = (m[1] || m[3]).trim();
     const index = m[2] ? m[2].trim() : undefined;
     const list = m[4].trim();
@@ -566,7 +621,7 @@ export function compileTemplateToIR(
     siblings?: Node[],
     idx?: number
   ): string {
-    // handle clusters at same level (:if / :switch) → bindSwitch
+    // handle clusters and :mount at same level
     if (
       n.type === "el" &&
       n.tag === "template" &&
@@ -584,7 +639,7 @@ export function compileTemplateToIR(
         return parentVar;
       }
       if (typeof a[":switch"] === "string") {
-        const { branches, elseChildren, consumedTo } = collectSwitchCluster(
+        const { branches, elseChildren } = collectSwitchCluster(
           a[":switch"],
           siblings,
           idx
@@ -593,25 +648,75 @@ export function compileTemplateToIR(
         return parentVar;
       }
       if (typeof a[":for"] === "string") {
-        // Single node (no sibling cluster)
         use("bindFor");
-
         const parsed = parseForExpression(a[":for"]);
         const itemVar = parsed.item;
         const idxVar = parsed.index ?? "__i";
         const listExpr = parsed.list;
-
         const keyExpr =
           typeof a[":key"] === "string" && a[":key"].trim().length
             ? a[":key"].trim()
             : null;
-
         const getItems = `() => ((${listExpr}) || [])`;
         const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
         const blockFactory = emitBlockFactory(n.children, [itemVar, idxVar]);
-
         mount.push(
           `__stops.push(bindFor(${parentVar}, ${getItems}, ${keyOf}, ${blockFactory}));`
+        );
+        return parentVar;
+      }
+      // === :mount (top/sibling level) ===
+      if (typeof a[":mount"] === "string") {
+        // reuse inline logic by creating a faux block and appending to mount[]
+        const fakeParent = parentVar;
+        // build exactly as inlineEmitMount would do:
+        const baseProps =
+          typeof a[":props"] === "string" ? a[":props"].trim() : "{}";
+        const literalPairs: string[] = [];
+        for (const k in a) {
+          if (k === ":mount" || k === ":props") continue;
+          if (k.startsWith(":")) {
+            const pname = k.slice(1);
+            literalPairs.push(`${JSON.stringify(pname)}: (${a[k]})`);
+          }
+        }
+        for (const k in a) {
+          if (!k.startsWith("@")) continue;
+          const raw = k.slice(1);
+          const parts = raw.split(".");
+          const ev = parts.shift()!;
+          const propName = "on" + ev.charAt(0).toUpperCase() + ev.slice(1);
+          const body = a[k] || "";
+          const handler = `(e)=>{ ${body.replace(/\$event/g, "e")} }`;
+          literalPairs.push(`${JSON.stringify(propName)}: ${handler}`);
+        }
+        const mergedProps =
+          literalPairs.length > 0
+            ? `Object.assign({}, (${baseProps}), { ${literalPairs.join(
+                ", "
+              )} })`
+            : `(${baseProps})`;
+        use("effect");
+        use("stop");
+        const childVar = vid("child");
+        const runVar = vid("run");
+        mount.push(
+          `
+{
+  let ${childVar} = null;
+  const ${runVar} = effect(() => {
+    const __p = (${mergedProps});
+    if (!${childVar}) {
+      const __C = (${a[":mount"]});
+      ${childVar} = __C(__p, { app: ctx.app });
+      ${childVar}.mount(${fakeParent}, null);
+    } else {
+      ${childVar}.patch && ${childVar}.patch(__p);
+    }
+  });
+  __stops.push(() => { stop(${runVar}); try { ${childVar} && ${childVar}.destroy && ${childVar}.destroy(); } catch {} });
+}
+`.trim()
         );
         return parentVar;
       }
@@ -717,7 +822,6 @@ export function compileTemplateToIR(
       );
     }
 
-    // === children (cluster-aware) ===
     for (let i = 0; i < n.children.length; i++) {
       const c = n.children[i];
 
@@ -744,30 +848,76 @@ export function compileTemplateToIR(
         }
         if (typeof a[":for"] === "string") {
           use("bindFor");
-
           const parsed = parseForExpression(a[":for"]);
           const itemVar = parsed.item;
           const idxVar = parsed.index ?? "__i";
           const listExpr = parsed.list;
-
           const keyExpr =
             typeof a[":key"] === "string" && a[":key"].trim().length
               ? a[":key"].trim()
               : null;
-
           const getItems = `() => ((${listExpr}) || [])`;
           const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
           const blockFactory = emitBlockFactory(c.children, [itemVar, idxVar]);
-
           mount.push(
             `__stops.push(bindFor(${el}, ${getItems}, ${keyOf}, ${blockFactory}));`
           );
-          i = i; // consumed just this one node
+          continue;
+        }
+        // === :mount in children ===
+        if (typeof a[":mount"] === "string") {
+          const baseProps =
+            typeof a[":props"] === "string" ? a[":props"].trim() : "{}";
+          const literalPairs: string[] = [];
+          for (const k in a) {
+            if (k === ":mount" || k === ":props") continue;
+            if (k.startsWith(":")) {
+              const pname = k.slice(1);
+              literalPairs.push(`${JSON.stringify(pname)}: (${a[k]})`);
+            }
+          }
+          for (const k in a) {
+            if (!k.startsWith("@")) continue;
+            const raw = k.slice(1);
+            const parts = raw.split(".");
+            const ev = parts.shift()!;
+            const propName = "on" + ev.charAt(0).toUpperCase() + ev.slice(1);
+            const body = a[k] || "";
+            const handler = `(e)=>{ ${body.replace(/\$event/g, "e")} }`;
+            literalPairs.push(`${JSON.stringify(propName)}: ${handler}`);
+          }
+          const mergedProps =
+            literalPairs.length > 0
+              ? `Object.assign({}, (${baseProps}), { ${literalPairs.join(
+                  ", "
+                )} })`
+              : `(${baseProps})`;
+          use("effect");
+          use("stop");
+          const childVar = vid("child");
+          const runVar = vid("run");
+          mount.push(
+            `
+{
+  let ${childVar} = null;
+  const ${runVar} = effect(() => {
+    const __p = (${mergedProps});
+    if (!${childVar}) {
+      const __C = (${a[":mount"]});
+      ${childVar} = __C(__p, { app: ctx.app });
+      ${childVar}.mount(${el}, null);
+    } else {
+      ${childVar}.patch && ${childVar}.patch(__p);
+    }
+  });
+  __stops.push(() => { stop(${runVar}); try { ${childVar} && ${childVar}.destroy && ${childVar}.destroy(); } catch {} });
+}
+`.trim()
+          );
           continue;
         }
       }
 
-      // Normal child
       const res = walk(c, el, n.children, i);
       if (c.type === "el") {
         mount.push(`Dom.insert(${res}, ${el});`);
@@ -778,7 +928,6 @@ export function compileTemplateToIR(
     return el;
   }
 
-  // === top-level cluster-aware ===
   const roots: string[] = [];
   for (let i = 0; i < ast.length; i++) {
     const n = ast[i];
@@ -803,23 +952,71 @@ export function compileTemplateToIR(
       }
       if (typeof a[":for"] === "string") {
         use("bindFor");
-
         const parsed = parseForExpression(a[":for"]);
         const itemVar = parsed.item;
         const idxVar = parsed.index ?? "__i";
         const listExpr = parsed.list;
-
         const keyExpr =
           typeof a[":key"] === "string" && a[":key"].trim().length
             ? a[":key"].trim()
             : null;
-
         const getItems = `() => ((${listExpr}) || [])`;
         const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
         const blockFactory = emitBlockFactory(n.children, [itemVar, idxVar]);
-
         mount.push(
           `__stops.push(bindFor(target, ${getItems}, ${keyOf}, ${blockFactory}));`
+        );
+        continue;
+      }
+      // === :mount at top level ===
+      if (typeof a[":mount"] === "string") {
+        const baseProps =
+          typeof a[":props"] === "string" ? a[":props"].trim() : "{}";
+        const literalPairs: string[] = [];
+        for (const k in a) {
+          if (k === ":mount" || k === ":props") continue;
+          if (k.startsWith(":")) {
+            const pname = k.slice(1);
+            literalPairs.push(`${JSON.stringify(pname)}: (${a[k]})`);
+          }
+        }
+        for (const k in a) {
+          if (!k.startsWith("@")) continue;
+          const raw = k.slice(1);
+          const parts = raw.split(".");
+          const ev = parts.shift()!;
+          const propName = "on" + ev.charAt(0).toUpperCase() + ev.slice(1);
+          const body = a[k] || "";
+          const handler = `(e)=>{ ${body.replace(/\$event/g, "e")} }`;
+          literalPairs.push(`${JSON.stringify(propName)}: ${handler}`);
+        }
+        const mergedProps =
+          literalPairs.length > 0
+            ? `Object.assign({}, (${baseProps}), { ${literalPairs.join(
+                ", "
+              )} })`
+            : `(${baseProps})`;
+        use("effect");
+        use("stop");
+        const childVar = vid("child");
+        const runVar = vid("run");
+        mount.push(
+          `
+{
+  let ${childVar} = null;
+  const ${runVar} = effect(() => {
+    const __p = (${mergedProps});
+    if (!${childVar}) {
+      const __C = (${a[":mount"]});
+      ${childVar} = __C(__p, { app: ctx.app });
+      ${childVar}.mount(target, anchor ?? null);
+    } else {
+      ${childVar}.patch && ${childVar}.patch(__p);
+    }
+  });
+  __stops.push(() => { stop(${runVar}); try { ${childVar} && ${childVar}.destroy && ${childVar}.destroy(); } catch {} });
+}
+`.trim()
         );
         continue;
       }
@@ -830,7 +1027,10 @@ export function compileTemplateToIR(
       if (
         !(
           n.tag === "template" &&
-          (":if" in n.attrs || ":switch" in n.attrs || ":for" in n.attrs)
+          (":if" in n.attrs ||
+            ":switch" in n.attrs ||
+            ":for" in n.attrs ||
+            ":mount" in n.attrs)
         )
       ) {
         roots.push(res);
@@ -850,9 +1050,7 @@ export function compileTemplateToIR(
     bindings,
   };
 
-  // pass extra imports (bindSwitch/bindFor/etc. used inside factories)
   (ir as any).imports = Array.from(extraImports);
-
   return ir;
 }
 

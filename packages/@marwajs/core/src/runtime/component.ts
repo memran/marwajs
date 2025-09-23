@@ -9,6 +9,8 @@ export interface ComponentHooks<TProps = any> {
 
 export interface ComponentContext {
   app: import("./app").App;
+  /** Child → Parent custom events */
+  emit: (event: string, ...args: any[]) => void;
 }
 
 export type ComponentSetup<TProps = any> = (
@@ -41,7 +43,7 @@ __setEffectScopeHook((runner) => {
 export function defineComponent<TProps = any>(setup: ComponentSetup<TProps>) {
   return function create(
     props: TProps,
-    ctx: ComponentContext
+    ctx: Omit<ComponentContext, "emit"> & { app: import("./app").App }
   ): ComponentHooks<TProps> {
     const parent = currentInstance;
     const instance: ComponentInstance = {
@@ -54,9 +56,30 @@ export function defineComponent<TProps = any>(setup: ComponentSetup<TProps>) {
       effects: new Set(),
     };
 
+    // Extract component listeners from props (compiler will inject __listeners)
+    const raw: any = props as any;
+    const listeners: Record<string, Function> =
+      (raw && raw.__listeners) || Object.create(null);
+
+    // Do not expose __listeners to user setup() props
+    let cleanProps = props;
+    if (raw && raw.__listeners) {
+      cleanProps = { ...raw };
+      delete (cleanProps as any).__listeners;
+    }
+
+    // Compose ctx with emit
+    const emit = (event: string, ...args: any[]) => {
+      const h = listeners[event];
+      if (typeof h === "function") {
+        h(...args);
+      }
+    };
+    const childCtx: ComponentContext = { ...(ctx as any), emit };
+
     // Run setup with this instance as current to capture effects
     currentInstance = instance;
-    const hooks = setup(props, ctx);
+    const hooks = setup(cleanProps as TProps, childCtx);
     currentInstance = parent;
 
     const wrapped: ComponentHooks<TProps> = {
@@ -64,7 +87,6 @@ export function defineComponent<TProps = any>(setup: ComponentSetup<TProps>) {
         currentInstance = instance;
         hooks.mount(target, anchor);
         instance.isMounted = true;
-        // run onMount callbacks
         for (const cb of instance.mountCbs) {
           try {
             cb();
@@ -130,7 +152,6 @@ export function provide<T>(key: any, value: T): void {
 export function inject<T = any>(key: any, defaultValue?: T): T | undefined {
   const i = getCurrentInstance();
   if (!i) return defaultValue;
-  // prototype chain lookup
   if (key in i.provides) return i.provides[key];
   return defaultValue;
 }

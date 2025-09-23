@@ -50,7 +50,6 @@ const Child = defineComponent((props, ctx) => {
 onMount(() => {
   const host = (typeof document !== 'undefined') && document.getElementById('slot');
   if (host) {
-    console.log('Mounting child');
     const inst = Child({}, { app: ctx.app });
     inst.mount(host);
   }
