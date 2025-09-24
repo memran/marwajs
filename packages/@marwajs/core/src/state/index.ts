@@ -25,13 +25,6 @@ export function createState<T>(initial: T): State<T> {
 
   const get = () => s();
 
-  //   const set = (next: T | Updater<T>) => {
-  //     if (typeof next === "function") {
-  //       s.set((next as Updater<T>)(s()));
-  //     } else {
-  //       s.set(next);
-  //     }
-  //   };
   const set = (next: T | Updater<T>) => {
     const prev = s();
     const nextVal =
