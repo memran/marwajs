@@ -3,6 +3,7 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
+    "preserveShebang": true,
     "module": "ES2020",
     "moduleResolution": "Bundler",
     "types": ["node", "vitest/globals"],
@@ -10,5 +11,5 @@
       "@marwajs/core": ["../../@marwajs/core/src"]
     }
   },
-  "include": ["src"]
+  "include": ["src", "bin"]
 }

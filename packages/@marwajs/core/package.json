@@ -22,5 +22,16 @@
     "happy-dom": "^14.12.3",
     "typescript": "^5.9.2",
     "vitest": "^2.1.9"
-  }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/memran/marwajs.git"
+  },
+  "license": "MIT"
 }

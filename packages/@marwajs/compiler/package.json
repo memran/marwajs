@@ -2,21 +2,33 @@
   "name": "@marwajs/compiler",
   "version": "0.0.1",
   "type": "module",
+  "bin": {
+    "marwa-compile": "dist/bin/compile.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "pretest": "npm -w @marwajs/core run build",
+    "test": "vitest --config vitest.config.ts"
+  },
   "devDependencies": {
+    "@marwajs/core": "^0.0.1",
     "@types/node": "^22.0.0",
     "happy-dom": "^14.12.0",
     "typescript": "^5.9.2",
     "vitest": "^2.1.9"
   },
-  "dependencies": {
-    "@marwajs/core": "file:../@marwajs/core"
+  "publishConfig": {
+    "access": "public"
   },
-  "bin": {
-    "marwa-compile": "dist/bin/compile.js"
+  "engines": {
+    "node": ">=18"
   },
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "pretest": "npm -w @marwajs/core run build",
-    "test": "vitest --config vitest.config.ts"
-  }
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/memran/marwajs.git"
+  },
+  "license": "MIT"
 }

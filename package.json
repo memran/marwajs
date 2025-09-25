@@ -8,7 +8,10 @@
     "packages/@*/*"
   ],
   "scripts": {
-    "build": "npm run -w @marwajs/core build && npm run -w @marwajs/compiler build",
-    "test": "npm run -w @marwajs/core test && npm run -w @marwajs/compiler test"
+    "build": "npm run -w @marwajs/core build && npm run -w @marwajs/compiler build && npm run -w create-marwa build",
+    "test": "npm run -w @marwajs/core test && npm run -w @marwajs/compiler test",
+    "publish:core": "npm publish -w @marwajs/core --access public",
+    "publish:compiler": "npm publish -w @marwajs/compiler --access public",
+    "publish:create": "npm publish -w create-marwa --access public"
   }
 }
