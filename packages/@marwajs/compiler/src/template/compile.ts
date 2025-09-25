@@ -16,7 +16,7 @@ const BEHAVIOR_MODS = new Set<string>([
 ]);
 
 // Map key modifiers to DOM e.key values
-const KEY_MODS: Record<string, string[]> = {
+const KEY_MAP: Record<string, string[]> = {
   enter: ["Enter"],
   esc: ["Escape"],
   escape: ["Escape"],
@@ -30,6 +30,190 @@ const KEY_MODS: Record<string, string[]> = {
   backspace: ["Backspace"],
 };
 
+// ---------- small utils ----------
+const has = (o: any, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+const q = JSON.stringify;
+const trimOr = (s: any, fallback = "") =>
+  typeof s === "string" ? s.trim() : fallback;
+
+function splitMods(raw: string) {
+  const parts = raw.split(".");
+  const type = parts.shift()!;
+  const behavior = parts.filter((m) => BEHAVIOR_MODS.has(m));
+  const keymods = parts.filter((m) => has(KEY_MAP, m));
+  return { type, behavior, keymods };
+}
+
+function buildEventHandler(
+  code: string,
+  behavior: string[],
+  keymods: string[]
+) {
+  let handler = `(e)=>{ ${code} }`;
+  if (keymods.length) {
+    const keys = keymods.map((k) => KEY_MAP[k]).flat();
+    handler = `(e)=>{ if (!(${JSON.stringify(
+      keys
+    )}).includes(e.key)) return; ${code} }`;
+  }
+  if (behavior.length) {
+    handler = `withModifiers(${handler}, [${behavior
+      .map((m) => q(m))
+      .join(",")}])`;
+  }
+  return handler;
+}
+
+// ---- :for parser ----
+function parseForExpression(src: string): {
+  item: string;
+  index?: string;
+  list: string;
+} {
+  const re =
+    /^\s*(?:\(\s*([A-Za-z_$][\w$]*)\s*,\s*([A-Za-z_$][\w$]*)\s*\)|([A-Za-z_$][\w$]*))\s+in\s+([\s\S]+?)\s*$/;
+  const m = re.exec(src);
+  if (!m) return { item: "item", index: "__i", list: src.trim() };
+  const item = (m[1] || m[3]).trim();
+  const index = m[2] ? m[2].trim() : undefined;
+  const list = m[4].trim();
+  return { item, index, list };
+}
+
+// ---------- interpolation ----------
+function compileTextExpr(raw: string): string | null {
+  const re = /\{\{\s*([^}]+?)\s*\}\}/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  const parts: string[] = [];
+  while ((m = re.exec(raw))) {
+    const staticPart = raw.slice(last, m.index);
+    if (staticPart) parts.push(staticPart.replace(/`/g, "\\`"));
+    parts.push(`\${(${m[1]})}`);
+    last = m.index + m[0].length;
+  }
+  const tail = raw.slice(last);
+  if (!parts.length && !tail) return null;
+  if (tail) parts.push(tail.replace(/`/g, "\\`"));
+  if (parts.length === 1 && !/\$\{/.test(parts[0])) return null;
+  return "`" + parts.join("") + "`";
+}
+
+// ---------- common collectors (if / switch) ----------
+type Branch = { when: string; children: Node[] };
+function collectIfCluster(
+  siblings: Node[],
+  startIndex: number
+): { branches: Branch[]; elseChildren?: Node[]; consumedTo: number } {
+  const first = siblings[startIndex] as any;
+  const branches: Branch[] = [
+    { when: `() => ((${first.attrs[":if"]}))`, children: first.children },
+  ];
+  let elseChildren: Node[] | undefined;
+  let j = startIndex + 1;
+  while (j < siblings.length) {
+    const sib: any = siblings[j];
+    if (sib.type !== "el" || sib.tag !== "template") break;
+    const hasElseIf = typeof sib.attrs[":else-if"] === "string";
+    const hasElse = has(sib.attrs, ":else");
+    if (!hasElseIf && !hasElse) break;
+    if (hasElseIf) {
+      branches.push({
+        when: `() => ((${sib.attrs[":else-if"]}))`,
+        children: sib.children,
+      });
+      j++;
+      continue;
+    }
+    elseChildren = sib.children;
+    j++;
+    break;
+  }
+  return { branches, elseChildren, consumedTo: j - 1 };
+}
+
+function collectSwitchCluster(
+  switchExpr: string,
+  siblings: Node[],
+  startIndex: number
+): { branches: Branch[]; elseChildren?: Node[]; consumedTo: number } {
+  const branches: Branch[] = [];
+  let elseChildren: Node[] | undefined;
+  let j = startIndex + 1;
+  while (j < siblings.length) {
+    const sib: any = siblings[j];
+    if (sib.type !== "el" || sib.tag !== "template") break;
+    const hasCase = has(sib.attrs, ":case");
+    const hasDefault = has(sib.attrs, ":default");
+    if (!hasCase && !hasDefault) break;
+    if (hasCase) {
+      const c = trimOr(sib.attrs[":case"]);
+      branches.push({
+        when: `() => (((${switchExpr})) === ((${c})))`,
+        children: sib.children,
+      });
+      j++;
+      continue;
+    }
+    elseChildren = sib.children;
+    j++;
+    break;
+  }
+  return { branches, elseChildren, consumedTo: j - 1 };
+}
+
+// ---------- shared emit helpers ----------
+
+function emitForBinding(
+  push: (line: string) => void,
+  use: (n: string) => void,
+  parentVar: string,
+  forSrc: string,
+  keySrc: string | undefined,
+  factory: string
+) {
+  use("bindFor");
+  const parsed = parseForExpression(forSrc);
+  const itemVar = parsed.item;
+  const idxVar = parsed.index ?? "__i";
+  const listExpr = parsed.list;
+  const keyExpr =
+    typeof keySrc === "string" && keySrc.trim().length ? keySrc.trim() : null;
+  const getItems = `() => ((${listExpr}) || [])`;
+  const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
+  push(
+    `__stops.push(bindFor(${parentVar}, ${getItems}, ${keyOf}, ${factory}));`
+  );
+}
+
+function buildMountPropsObject(attrs: Record<string, string>): string {
+  const baseProps = trimOr(attrs[":props"], "{}");
+  const pairs: string[] = [];
+
+  // attribute props
+  for (const k in attrs) {
+    if (k === ":mount" || k === ":props") continue;
+    if (k.startsWith(":")) {
+      const pname = k.slice(1);
+      pairs.push(`${q(pname)}: (${attrs[k]})`);
+    }
+  }
+  // event props → onX
+  for (const k in attrs) {
+    if (!k.startsWith("@")) continue;
+    const { type } = splitMods(k.slice(1)); // ignore modifiers for component props
+    const propName = "on" + type.charAt(0).toUpperCase() + type.slice(1);
+    const body = attrs[k] || "";
+    const handler = `(e)=>{ ${body.replace(/\$event/g, "e")} }`;
+    pairs.push(`${q(propName)}: ${handler}`);
+  }
+
+  return pairs.length > 0
+    ? `Object.assign({}, (${baseProps}), { ${pairs.join(", ")} })`
+    : `(${baseProps})`;
+}
+
+// ---------- compiler ----------
 export function compileTemplateToIR(
   html: string,
   { file, name, scopeAttr }: { file: string; name: string; scopeAttr?: string }
@@ -42,28 +226,10 @@ export function compileTemplateToIR(
   // Track extra runtime imports required by inline factories / control flow
   const extraImports = new Set<string>();
   const use = (n: string) => extraImports.add(n);
-  use("Dom"); // always used by compiler output
+  use("Dom"); // always used
 
   let id = 0;
   const vid = (p: string) => `_${p}${++id}`;
-
-  function compileTextExpr(raw: string): string | null {
-    const re = /\{\{\s*([^}]+?)\s*\}\}/g;
-    let last = 0;
-    let m: RegExpExecArray | null;
-    const parts: string[] = [];
-    while ((m = re.exec(raw))) {
-      const staticPart = raw.slice(last, m.index);
-      if (staticPart) parts.push(staticPart.replace(/`/g, "\\`"));
-      parts.push(`\${(${m[1]})}`);
-      last = m.index + m[0].length;
-    }
-    const tail = raw.slice(last);
-    if (!parts.length && !tail) return null;
-    if (tail) parts.push(tail.replace(/`/g, "\\`"));
-    if (parts.length === 1 && !/\$\{/.test(parts[0])) return null;
-    return "`" + parts.join("") + "`";
-  }
 
   // ---------- unified block factory (optionally parameterized) ----------
   function emitBlockFactory(
@@ -72,205 +238,54 @@ export function compileTemplateToIR(
   ): string {
     use("Dom");
 
-    const localId = (() => {
-      let n = 0;
-      return (p: string) => `__b_${p}${++n}`;
-    })();
-
+    let local = 0;
+    const lid = (p: string) => `__b_${p}${++local}`;
     const linesCreate: string[] = [];
     const linesMount: string[] = [];
-    const linesBindings: string[] = [];
+    const linesBind: string[] = [];
 
-    function insertLine(childVar: string, parentVar: string, ROOT: string) {
+    // compile-time locals (variable names for runtime code)
+    const rootContainer = lid("root");
+    const anchor = lid("a");
+    const ROOT = rootContainer;
+
+    const insert = (childVar: string, parentVar: string) => {
       if (parentVar === ROOT) {
         linesMount.push(`Dom.insert(${childVar}, ${parentVar}, __a);`);
       } else {
         linesMount.push(`Dom.insert(${childVar}, ${parentVar});`);
       }
-    }
+    };
 
-    // ---- INLINE clusters (if / switch / for / mount) inside this block ----
-    function collectIfClusterInline(
-      siblings: Node[],
-      startIndex: number
-    ): {
-      branches: { when: string; children: Node[] }[];
-      elseChildren?: Node[];
-      consumedTo: number;
-    } {
-      const first = siblings[startIndex] as any;
-      const branches: { when: string; children: Node[] }[] = [];
-      let elseChildren: Node[] | undefined;
-      branches.push({
-        when: `() => ((${first.attrs[":if"]}))`,
-        children: first.children,
-      });
-      let j = startIndex + 1;
-      while (j < siblings.length) {
-        const sib = siblings[j] as any;
-        if (sib.type !== "el" || sib.tag !== "template") break;
-        const hasElseIf = typeof sib.attrs[":else-if"] === "string";
-        const hasElse = Object.prototype.hasOwnProperty.call(
-          sib.attrs,
-          ":else"
-        );
-        if (!hasElseIf && !hasElse) break;
-        if (hasElseIf) {
-          branches.push({
-            when: `() => ((${sib.attrs[":else-if"]}))`,
-            children: sib.children,
-          });
-          j++;
-          continue;
-        }
-        if (hasElse) {
-          elseChildren = sib.children;
-          j++;
-          break;
-        }
-      }
-      return { branches, elseChildren, consumedTo: j - 1 };
-    }
-
-    function collectSwitchClusterInline(
-      switchExpr: string,
-      siblings: Node[],
-      startIndex: number
-    ): {
-      branches: { when: string; children: Node[] }[];
-      elseChildren?: Node[];
-      consumedTo: number;
-    } {
-      const branches: { when: string; children: Node[] }[] = [];
-      let elseChildren: Node[] | undefined;
-      let j = startIndex + 1;
-      while (j < siblings.length) {
-        const sib = siblings[j] as any;
-        if (sib.type !== "el" || sib.tag !== "template") break;
-        const hasCase = Object.prototype.hasOwnProperty.call(
-          sib.attrs,
-          ":case"
-        );
-        const hasDefault = Object.prototype.hasOwnProperty.call(
-          sib.attrs,
-          ":default"
-        );
-        if (!hasCase && !hasDefault) break;
-        if (hasCase) {
-          const c = (sib.attrs[":case"] ?? "").trim();
-          branches.push({
-            when: `() => (((${switchExpr})) === ((${c})))`,
-            children: sib.children,
-          });
-          j++;
-          continue;
-        }
-        if (hasDefault) {
-          elseChildren = sib.children;
-          j++;
-          break;
-        }
-      }
-      return { branches, elseChildren, consumedTo: j - 1 };
-    }
-
-    function inlineEmitSwitchCall(
-      parentVar: string,
-      branches: { when: string; children: Node[] }[],
-      elseChildren?: Node[]
-    ) {
-      use("bindSwitch");
-      const arr = `[${branches
-        .map(
-          (b) =>
-            `{ when: (${b.when}), factory: (${emitBlockFactory(b.children)}) }`
-        )
-        .join(", ")}]`;
-      if (elseChildren && elseChildren.length) {
-        const ef = emitBlockFactory(elseChildren);
-        linesBindings.push(
-          `__stops.push(bindSwitch(${parentVar}, ${arr}, ${ef}));`
-        );
-      } else {
-        linesBindings.push(`__stops.push(bindSwitch(${parentVar}, ${arr}));`);
-      }
-    }
-
-    // === :for (inline) ===
-    function inlineEmitFor(parentVar: string, node: any): number {
+    // inline cluster emitters use the same helpers as top-level
+    const inlineFor = (parentVar: string, node: any): number => {
       const a = node.attrs || {};
       if (typeof a[":for"] !== "string") return -1;
-      use("bindFor");
-
       const parsed = parseForExpression(a[":for"]);
-      const itemVar = parsed.item;
-      const idxVar = parsed.index ?? "__i";
-      const listExpr = parsed.list;
-
-      const keyExpr =
-        typeof a[":key"] === "string" && a[":key"].trim().length
-          ? a[":key"].trim()
-          : null;
-
-      const getItems = `() => ((${listExpr}) || [])`;
-      const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
-      const blockFactory = emitBlockFactory(node.children, [itemVar, idxVar]);
-
-      linesBindings.push(
-        `__stops.push(bindFor(${parentVar}, ${getItems}, ${keyOf}, ${blockFactory}));`
+      const factory = emitBlockFactory(node.children, [
+        parsed.item,
+        parsed.index ?? "__i",
+      ]);
+      emitForBinding(
+        (l) => linesBind.push(l),
+        use,
+        parentVar,
+        a[":for"],
+        a[":key"],
+        factory
       );
       return 0;
-    }
+    };
 
-    // === :mount (inline) ===  Parent→Child props + Child→Parent events (via onX props)
-    function inlineEmitMount(parentVar: string, node: any): number {
+    const inlineMount = (parentVar: string, node: any): number => {
       const a = node.attrs || {};
       if (typeof a[":mount"] !== "string") return -1;
-
-      // Gather props:
-      // - :props="expr" as base
-      // - every :foo="bar" becomes { foo: bar }
-      // - every @ev="handler($event)" becomes { onEv: (e)=>{ handler(e) } }
-      const baseProps =
-        typeof a[":props"] === "string" ? a[":props"].trim() : "{}";
-
-      const literalPairs: string[] = [];
-
-      // attribute props
-      for (const k in a) {
-        if (k === ":mount" || k === ":props") continue;
-        if (k.startsWith(":")) {
-          const pname = k.slice(1);
-          literalPairs.push(`${JSON.stringify(pname)}: (${a[k]})`);
-        }
-      }
-      // event props
-      for (const k in a) {
-        if (!k.startsWith("@")) continue;
-        const raw = k.slice(1);
-        const parts = raw.split(".");
-        const ev = parts.shift()!; // ignore behavior/key mods on component events
-        const propName = "on" + ev.charAt(0).toUpperCase() + ev.slice(1);
-        const body = a[k] || "";
-        // support $event passthrough
-        const handler = `(e)=>{ ${body.replace(/\$event/g, "e")} }`;
-        literalPairs.push(`${JSON.stringify(propName)}: ${handler}`);
-      }
-
-      const mergedProps =
-        literalPairs.length > 0
-          ? `Object.assign({}, (${baseProps}), { ${literalPairs.join(", ")} })`
-          : `(${baseProps})`;
-
-      // Emit reactive mount+patch
-      // effect is used so props can be reactive; child.patch runs when changed.
       use("effect");
       use("stop");
-
-      const childVar = localId("child");
-      const runVar = localId("run");
-
-      linesBindings.push(
+      const childVar = lid("child");
+      const runVar = lid("run");
+      const mergedProps = buildMountPropsObject(a);
+      linesBind.push(
         `
 {
   let ${childVar} = null;
@@ -288,108 +303,118 @@ export function compileTemplateToIR(
 }
 `.trim()
       );
-
       return 0;
-    }
+    };
 
     function walkInline(
       n: Node,
       parentVar: string,
       siblings: Node[],
-      idx: number,
-      ROOT: string
+      idx: number
     ): number {
       if (n.type === "el" && n.tag === "template") {
-        const a: any = (n as any).attrs || {};
+        const a: any = n.attrs || {};
         if (typeof a[":if"] === "string") {
-          const { branches, elseChildren, consumedTo } = collectIfClusterInline(
+          const { branches, elseChildren, consumedTo } = collectIfCluster(
             siblings,
             idx
           );
-          inlineEmitSwitchCall(parentVar, branches, elseChildren);
+          emitSwitchBinding(
+            (l) => linesBind.push(l),
+            use,
+            parentVar,
+            branches,
+            elseChildren
+          );
           return consumedTo;
         }
         if (typeof a[":switch"] === "string") {
-          const { branches, elseChildren, consumedTo } =
-            collectSwitchClusterInline(a[":switch"], siblings, idx);
-          inlineEmitSwitchCall(parentVar, branches, elseChildren);
+          const { branches, elseChildren, consumedTo } = collectSwitchCluster(
+            a[":switch"],
+            siblings,
+            idx
+          );
+          emitSwitchBinding(
+            (l) => linesBind.push(l),
+            use,
+            parentVar,
+            branches,
+            elseChildren
+          );
           return consumedTo;
         }
-        const f = inlineEmitFor(parentVar, n as any);
+        const f = inlineFor(parentVar, n as any);
         if (f >= 0) return idx;
-
-        const m = inlineEmitMount(parentVar, n as any);
+        const m = inlineMount(parentVar, n as any);
         if (m >= 0) return idx;
       }
 
       if (n.type === "text") {
         const expr = compileTextExpr(n.value);
-        const t = localId("t");
+        const t = lid("t");
         linesCreate.push(
           `const ${t} = Dom.createText(${
             expr ? "''" : JSON.stringify(n.value)
           });`
         );
-        insertLine(t, parentVar, ROOT);
+        insert(t, parentVar);
         if (expr) {
-          linesBindings.push(`__stops.push(bindText(${t}, () => (${expr})));`);
+          linesBind.push(`__stops.push(bindText(${t}, () => (${expr})));`);
           use("bindText");
         }
         return idx;
       }
 
       // element
-      const el = localId("e");
+      const el = lid("e");
       linesCreate.push(
         `const ${el} = Dom.createElement(${JSON.stringify(n.tag)});`
       );
-      if (scopeAttr) {
+      if (scopeAttr)
         linesCreate.push(
           `Dom.setAttr(${el}, ${JSON.stringify(scopeAttr)}, "");`
         );
-      }
 
       const attrs = (n as any).attrs || {};
       for (const k in attrs) {
         const v = attrs[k];
 
         if (k === ":text") {
-          const tn = localId("t");
+          const tn = lid("t");
           linesCreate.push(`const ${tn} = Dom.createText('');`);
           linesMount.push(`Dom.insert(${tn}, ${el});`);
-          linesBindings.push(`__stops.push(bindText(${tn}, () => (${v})));`);
+          linesBind.push(`__stops.push(bindText(${tn}, () => (${v})));`);
           use("bindText");
           continue;
         }
         if (k === ":class") {
-          linesBindings.push(`__stops.push(bindClass(${el}, () => (${v})));`);
+          linesBind.push(`__stops.push(bindClass(${el}, () => (${v})));`);
           use("bindClass");
           continue;
         }
         if (k === ":style") {
-          linesBindings.push(`__stops.push(bindStyle(${el}, () => (${v})));`);
+          linesBind.push(`__stops.push(bindStyle(${el}, () => (${v})));`);
           use("bindStyle");
           continue;
         }
         if (k === ":show") {
-          linesBindings.push(`__stops.push(bindShow(${el}, () => !!(${v})));`);
+          linesBind.push(`__stops.push(bindShow(${el}, () => !!(${v})));`);
           use("bindShow");
           continue;
         }
 
         if (k.startsWith("m-model")) {
           const [, ...mods] = k.split(".");
-          const opts: any = {};
-          if (mods.includes("number")) opts.number = true;
-          if (mods.includes("trim")) opts.trim = true;
-          if (mods.includes("lazy")) opts.lazy = true;
-
+          const opts: any = {
+            ...(mods.includes("number") ? { number: true } : {}),
+            ...(mods.includes("trim") ? { trim: true } : {}),
+            ...(mods.includes("lazy") ? { lazy: true } : {}),
+          };
           const model = v.trim();
           const isRef = /\.value$/.test(model);
           const getExpr = isRef ? model : `${model}()`;
           const setExpr = isRef ? `${model} = $_` : `${model}.set($_)`;
-
-          linesBindings.push(
+          linesBind.push(
             `__stops.push(bindModel(ctx.app, ${el}, () => (${getExpr}), (v) => (${setExpr.replace(
               /\$_/g,
               "v"
@@ -400,28 +425,10 @@ export function compileTemplateToIR(
         }
 
         if (k.startsWith("@")) {
-          const raw = k.slice(1);
-          const parts = raw.split(".");
-          const type = parts.shift()!;
-          const behaviorMods = parts.filter((m) => BEHAVIOR_MODS.has(m));
-          const keyMods = parts.filter((m) =>
-            Object.prototype.hasOwnProperty.call(KEY_MODS, m)
-          );
-
-          let handler = `(e)=>{ ${v} }`;
-          if (keyMods.length) {
-            const condKeys = keyMods.map((km) => KEY_MODS[km]).flat();
-            handler = `(e)=>{ if (!(${JSON.stringify(
-              condKeys
-            )}).includes(e.key)) return; ${v} }`;
-          }
-          if (behaviorMods.length) {
-            handler = `withModifiers(${handler}, [${behaviorMods
-              .map((m) => `'${m}'`)
-              .join(",")}])`;
-            use("withModifiers");
-          }
-          linesBindings.push(
+          const { type, behavior, keymods } = splitMods(k.slice(1));
+          let handler = buildEventHandler(v, behavior, keymods);
+          if (behavior.length) use("withModifiers");
+          linesBind.push(
             `__stops.push(onEvent(ctx.app, ${el}, ${JSON.stringify(
               type
             )}, ${handler}));`
@@ -432,7 +439,7 @@ export function compileTemplateToIR(
 
         if (k.startsWith(":")) {
           const name = k.slice(1);
-          linesBindings.push(
+          linesBind.push(
             `__stops.push(bindAttr(${el}, ${JSON.stringify(
               name
             )}, () => (${v})));`
@@ -447,181 +454,68 @@ export function compileTemplateToIR(
       }
 
       const kids = (n as any).children as Node[];
-      for (let i = 0; i < kids.length; i++) {
-        i = walkInline(kids[i], el, kids, i, ROOT);
-      }
+      for (let i = 0; i < kids.length; i++)
+        i = walkInline(kids[i], el, kids, i);
 
-      insertLine(el, parentVar, ROOT);
+      insert(el, parentVar);
       return idx;
     }
 
-    const rootContainer = localId("frag");
-    const anchor = localId("a");
-    const ROOT = rootContainer;
-
-    const mountHeader = [
-      `Dom.insert(${anchor}, parent, anchorNode ?? null);`,
-      `const ${rootContainer} = parent;`,
-      `const __a = anchorNode ?? null;`,
-    ];
-
-    const destroyFooter = [
-      `for (let i = __stops.length - 1; i >= 0; i--) { try { __stops[i](); } catch {} }`,
-      `Dom.remove(${anchor});`,
-    ];
-
+    // compile-time walk of children to fill lines*
     for (let i = 0; i < children.length; i++) {
-      i = walkInline(children[i], rootContainer, children, i, ROOT);
+      i = walkInline(children[i], ROOT, children, i);
     }
 
     const params = paramNames.length ? `(${paramNames.join(", ")})` : `()`;
     return `${params} => {
   const __stops = [];
   const ${anchor} = Dom.createAnchor('block');
-  ${linesCreate.join("\n  ")}
   return {
     el: ${anchor},
     mount(parent, anchorNode) {
-      ${mountHeader.join("\n      ")}
+      Dom.insert(${anchor}, parent, anchorNode ?? null);
+      const ${rootContainer} = parent;
+      const __a = anchorNode ?? null;
+      ${linesCreate.join("\n      ")}
       ${linesMount.join("\n      ")}
-      ${linesBindings.join("\n      ")}
+      ${linesBind.join("\n      ")}
     },
     destroy() {
-      ${destroyFooter.join("\n      ")}
+      for (let i = __stops.length - 1; i >= 0; i--) { try { __stops[i](); } catch {} }
+      Dom.remove(${anchor});
     }
   };
 }`;
   }
 
-  function emitEmptyBlockFactory(label = "empty") {
-    return `() => ({ el: Dom.createAnchor(${JSON.stringify(
-      label
-    )}), mount(){}, destroy(){} })`;
-  }
-
-  // ---- collectors for top/sibling-level clusters (if/switch only) ----
-  function collectIfCluster(
-    siblings: Node[],
-    startIndex: number
-  ): {
-    branches: { when: string; children: Node[] }[];
-    elseChildren?: Node[];
-    consumedTo: number;
-  } {
-    const first = siblings[startIndex] as any;
-    const branches: { when: string; children: Node[] }[] = [];
-    let elseChildren: Node[] | undefined;
-    branches.push({
-      when: `() => ((${first.attrs[":if"]}))`,
-      children: first.children,
-    });
-    let j = startIndex + 1;
-    while (j < siblings.length) {
-      const sib = siblings[j] as any;
-      if (sib.type !== "el" || sib.tag !== "template") break;
-      const hasElseIf = typeof sib.attrs[":else-if"] === "string";
-      const hasElse = Object.prototype.hasOwnProperty.call(sib.attrs, ":else");
-      if (!hasElseIf && !hasElse) break;
-      if (hasElseIf) {
-        branches.push({
-          when: `() => ((${sib.attrs[":else-if"]}))`,
-          children: sib.children,
-        });
-        j++;
-        continue;
-      }
-      if (hasElse) {
-        elseChildren = sib.children;
-        j++;
-        break;
-      }
-    }
-    return { branches, elseChildren, consumedTo: j - 1 };
-  }
-
-  function collectSwitchCluster(
-    switchExpr: string,
-    siblings: Node[],
-    startIndex: number
-  ): {
-    branches: { when: string; children: Node[] }[];
-    elseChildren?: Node[];
-    consumedTo: number;
-  } {
-    const branches: { when: string; children: Node[] }[] = [];
-    let elseChildren: Node[] | undefined;
-    let j = startIndex + 1;
-    while (j < siblings.length) {
-      const sib = siblings[j] as any;
-      if (sib.type !== "el" || sib.tag !== "template") break;
-      const hasCase = Object.prototype.hasOwnProperty.call(sib.attrs, ":case");
-      const hasDefault = Object.prototype.hasOwnProperty.call(
-        sib.attrs,
-        ":default"
-      );
-      if (!hasCase && !hasDefault) break;
-      if (hasCase) {
-        const c = (sib.attrs[":case"] ?? "").trim();
-        branches.push({
-          when: `() => (((${switchExpr})) === ((${c})))`,
-          children: sib.children,
-        });
-        j++;
-        continue;
-      }
-      if (hasDefault) {
-        elseChildren = sib.children;
-        j++;
-        break;
-      }
-    }
-    return { branches, elseChildren, consumedTo: j - 1 };
-  }
-
-  function emitSwitchCallToMount(
+  // ---------- now that emitBlockFactory exists, we can define emitSwitchBinding ----------
+  function emitSwitchBinding(
+    push: (line: string) => void,
+    use: (n: string) => void,
     parentVar: string,
     branches: { when: string; children: Node[] }[],
     elseChildren?: Node[]
   ) {
     use("bindSwitch");
-    const arr = `[${branches
-      .map(
-        (b) =>
-          `{ when: (${b.when}), factory: (${emitBlockFactory(b.children)}) }`
-      )
-      .join(", ")}]`;
+    const rec = (b: { when: string; children: Node[] }) =>
+      `{ when: (${b.when}), factory: (${emitBlockFactory(b.children)}) }`;
+    const arr = `[${branches.map(rec).join(", ")}]`;
     if (elseChildren && elseChildren.length) {
       const ef = emitBlockFactory(elseChildren);
-      mount.push(`__stops.push(bindSwitch(${parentVar}, ${arr}, ${ef}));`);
+      push(`__stops.push(bindSwitch(${parentVar}, ${arr}, ${ef}));`);
     } else {
-      mount.push(`__stops.push(bindSwitch(${parentVar}, ${arr}));`);
+      push(`__stops.push(bindSwitch(${parentVar}, ${arr}));`);
     }
   }
 
-  // ---- :for parser ----
-  function parseForExpression(src: string): {
-    item: string;
-    index?: string;
-    list: string;
-  } {
-    const re =
-      /^\s*(?:\(\s*([A-Za-z_$][\w$]*)\s*,\s*([A-Za-z_$][\w$]*)\s*\)|([A-Za-z_$][\w$]*))\s+in\s+([\s\S]+?)\s*$/;
-    const m = re.exec(src);
-    if (!m) return { item: "item", index: "__i", list: src.trim() };
-    const item = (m[1] || m[3]).trim();
-    const index = m[2] ? m[2].trim() : undefined;
-    const list = m[4].trim();
-    return { item, index, list };
-  }
-
-  // ---- main walker (top-level + element children) ----
+  // ---------- main walker ----------
   function walk(
     n: Node,
     parentVar?: string,
     siblings?: Node[],
     idx?: number
   ): string {
-    // handle clusters and :mount at same level
+    // clusters and :mount at same level
     if (
       n.type === "el" &&
       n.tag === "template" &&
@@ -630,74 +524,56 @@ export function compileTemplateToIR(
       typeof idx === "number"
     ) {
       const a: any = n.attrs || {};
+
       if (typeof a[":if"] === "string") {
-        const { branches, elseChildren, consumedTo } = collectIfCluster(
-          siblings,
-          idx
+        const { branches, elseChildren } = collectIfCluster(siblings, idx);
+        emitSwitchBinding(
+          (l) => mount.push(l),
+          use,
+          parentVar,
+          branches,
+          elseChildren
         );
-        emitSwitchCallToMount(parentVar, branches, elseChildren);
         return parentVar;
       }
+
       if (typeof a[":switch"] === "string") {
         const { branches, elseChildren } = collectSwitchCluster(
           a[":switch"],
           siblings,
           idx
         );
-        emitSwitchCallToMount(parentVar, branches, elseChildren);
-        return parentVar;
-      }
-      if (typeof a[":for"] === "string") {
-        use("bindFor");
-        const parsed = parseForExpression(a[":for"]);
-        const itemVar = parsed.item;
-        const idxVar = parsed.index ?? "__i";
-        const listExpr = parsed.list;
-        const keyExpr =
-          typeof a[":key"] === "string" && a[":key"].trim().length
-            ? a[":key"].trim()
-            : null;
-        const getItems = `() => ((${listExpr}) || [])`;
-        const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
-        const blockFactory = emitBlockFactory(n.children, [itemVar, idxVar]);
-        mount.push(
-          `__stops.push(bindFor(${parentVar}, ${getItems}, ${keyOf}, ${blockFactory}));`
+        emitSwitchBinding(
+          (l) => mount.push(l),
+          use,
+          parentVar,
+          branches,
+          elseChildren
         );
         return parentVar;
       }
-      // === :mount (top/sibling level) ===
+
+      if (typeof a[":for"] === "string") {
+        const parsed = parseForExpression(a[":for"]);
+        const factory = emitBlockFactory(n.children, [
+          parsed.item,
+          parsed.index ?? "__i",
+        ]);
+        emitForBinding(
+          (l) => mount.push(l),
+          use,
+          parentVar,
+          a[":for"],
+          a[":key"],
+          factory
+        );
+        return parentVar;
+      }
+
       if (typeof a[":mount"] === "string") {
-        // reuse inline logic by creating a faux block and appending to mount[]
-        const fakeParent = parentVar;
-        // build exactly as inlineEmitMount would do:
-        const baseProps =
-          typeof a[":props"] === "string" ? a[":props"].trim() : "{}";
-        const literalPairs: string[] = [];
-        for (const k in a) {
-          if (k === ":mount" || k === ":props") continue;
-          if (k.startsWith(":")) {
-            const pname = k.slice(1);
-            literalPairs.push(`${JSON.stringify(pname)}: (${a[k]})`);
-          }
-        }
-        for (const k in a) {
-          if (!k.startsWith("@")) continue;
-          const raw = k.slice(1);
-          const parts = raw.split(".");
-          const ev = parts.shift()!;
-          const propName = "on" + ev.charAt(0).toUpperCase() + ev.slice(1);
-          const body = a[k] || "";
-          const handler = `(e)=>{ ${body.replace(/\$event/g, "e")} }`;
-          literalPairs.push(`${JSON.stringify(propName)}: ${handler}`);
-        }
-        const mergedProps =
-          literalPairs.length > 0
-            ? `Object.assign({}, (${baseProps}), { ${literalPairs.join(
-                ", "
-              )} })`
-            : `(${baseProps})`;
         use("effect");
         use("stop");
+        const mergedProps = buildMountPropsObject(a);
         const childVar = vid("child");
         const runVar = vid("run");
         mount.push(
@@ -709,7 +585,7 @@ export function compileTemplateToIR(
     if (!${childVar}) {
       const __C = (${a[":mount"]});
       ${childVar} = __C(__p, { app: ctx.app });
-      ${childVar}.mount(${fakeParent}, null);
+      ${childVar}.mount(${parentVar}, null);
     } else {
       ${childVar}.patch && ${childVar}.patch(__p);
     }
@@ -766,16 +642,15 @@ export function compileTemplateToIR(
 
       if (k.startsWith("m-model")) {
         const [, ...mods] = k.split(".");
-        const opts: any = {};
-        if (mods.includes("number")) opts.number = true;
-        if (mods.includes("trim")) opts.trim = true;
-        if (mods.includes("lazy")) opts.lazy = true;
-
+        const opts: any = {
+          ...(mods.includes("number") ? { number: true } : {}),
+          ...(mods.includes("trim") ? { trim: true } : {}),
+          ...(mods.includes("lazy") ? { lazy: true } : {}),
+        };
         const model = v.trim();
         const isRef = /\.value$/.test(model);
         const getExpr = isRef ? model : `${model}()`;
         const setExpr = isRef ? `${model} = $_` : `${model}.set($_)`;
-
         bindings.push({
           kind: "model",
           target: el,
@@ -787,26 +662,9 @@ export function compileTemplateToIR(
       }
 
       if (k.startsWith("@")) {
-        const raw = k.slice(1);
-        const parts = raw.split(".");
-        const type = parts.shift()!;
-        const behaviorMods = parts.filter((m) => BEHAVIOR_MODS.has(m));
-        const keyMods = parts.filter((m) =>
-          Object.prototype.hasOwnProperty.call(KEY_MODS, m)
-        );
-
-        let handler = `(e)=>{ ${v} }`;
-        if (keyMods.length) {
-          const condKeys = keyMods.map((km) => KEY_MODS[km]).flat();
-          handler = `(e)=>{ if (!(${JSON.stringify(
-            condKeys
-          )}).includes(e.key)) return; ${v} }`;
-        }
-        if (behaviorMods.length) {
-          handler = `withModifiers(${handler}, [${behaviorMods
-            .map((m) => `'${m}'`)
-            .join(",")}])`;
-        }
+        const { type, behavior, keymods } = splitMods(k.slice(1));
+        const handler = buildEventHandler(v, behavior, keymods);
+        if (behavior.length) use("withModifiers");
         bindings.push({ kind: "event", target: el, type, handler });
         continue;
       }
@@ -822,6 +680,7 @@ export function compileTemplateToIR(
       );
     }
 
+    // handle children including nested clusters & :mount
     for (let i = 0; i < n.children.length; i++) {
       const c = n.children[i];
 
@@ -832,7 +691,13 @@ export function compileTemplateToIR(
             n.children,
             i
           );
-          emitSwitchCallToMount(el, branches, elseChildren);
+          emitSwitchBinding(
+            (l) => mount.push(l),
+            use,
+            el,
+            branches,
+            elseChildren
+          );
           i = consumedTo;
           continue;
         }
@@ -842,58 +707,37 @@ export function compileTemplateToIR(
             n.children,
             i
           );
-          emitSwitchCallToMount(el, branches, elseChildren);
+          emitSwitchBinding(
+            (l) => mount.push(l),
+            use,
+            el,
+            branches,
+            elseChildren
+          );
           i = consumedTo;
           continue;
         }
         if (typeof a[":for"] === "string") {
-          use("bindFor");
           const parsed = parseForExpression(a[":for"]);
-          const itemVar = parsed.item;
-          const idxVar = parsed.index ?? "__i";
-          const listExpr = parsed.list;
-          const keyExpr =
-            typeof a[":key"] === "string" && a[":key"].trim().length
-              ? a[":key"].trim()
-              : null;
-          const getItems = `() => ((${listExpr}) || [])`;
-          const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
-          const blockFactory = emitBlockFactory(c.children, [itemVar, idxVar]);
-          mount.push(
-            `__stops.push(bindFor(${el}, ${getItems}, ${keyOf}, ${blockFactory}));`
+          const factory = emitBlockFactory(c.children, [
+            parsed.item,
+            parsed.index ?? "__i",
+          ]);
+          emitForBinding(
+            (l) => mount.push(l),
+            use,
+            el,
+            a[":for"],
+            a[":key"],
+            factory
           );
           continue;
         }
         // === :mount in children ===
         if (typeof a[":mount"] === "string") {
-          const baseProps =
-            typeof a[":props"] === "string" ? a[":props"].trim() : "{}";
-          const literalPairs: string[] = [];
-          for (const k in a) {
-            if (k === ":mount" || k === ":props") continue;
-            if (k.startsWith(":")) {
-              const pname = k.slice(1);
-              literalPairs.push(`${JSON.stringify(pname)}: (${a[k]})`);
-            }
-          }
-          for (const k in a) {
-            if (!k.startsWith("@")) continue;
-            const raw = k.slice(1);
-            const parts = raw.split(".");
-            const ev = parts.shift()!;
-            const propName = "on" + ev.charAt(0).toUpperCase() + ev.slice(1);
-            const body = a[k] || "";
-            const handler = `(e)=>{ ${body.replace(/\$event/g, "e")} }`;
-            literalPairs.push(`${JSON.stringify(propName)}: ${handler}`);
-          }
-          const mergedProps =
-            literalPairs.length > 0
-              ? `Object.assign({}, (${baseProps}), { ${literalPairs.join(
-                  ", "
-                )} })`
-              : `(${baseProps})`;
           use("effect");
           use("stop");
+          const mergedProps = buildMountPropsObject(a);
           const childVar = vid("child");
           const runVar = vid("run");
           mount.push(
@@ -919,24 +763,30 @@ export function compileTemplateToIR(
       }
 
       const res = walk(c, el, n.children, i);
-      if (c.type === "el") {
-        mount.push(`Dom.insert(${res}, ${el});`);
-      }
+      if (c.type === "el") mount.push(`Dom.insert(${res}, ${el});`);
     }
 
     if (parentVar) mount.push(`Dom.insert(${el}, ${parentVar});`);
     return el;
   }
 
+  // ---------- roots ----------
   const roots: string[] = [];
   for (let i = 0; i < ast.length; i++) {
     const n = ast[i];
 
     if (n.type === "el" && n.tag === "template") {
       const a: any = n.attrs || {};
+
       if (typeof a[":if"] === "string") {
         const { branches, elseChildren, consumedTo } = collectIfCluster(ast, i);
-        emitSwitchCallToMount("target" as any, branches, elseChildren);
+        emitSwitchBinding(
+          (l) => mount.push(l),
+          use,
+          "target" as any,
+          branches,
+          elseChildren
+        );
         i = consumedTo;
         continue;
       }
@@ -946,58 +796,37 @@ export function compileTemplateToIR(
           ast,
           i
         );
-        emitSwitchCallToMount("target" as any, branches, elseChildren);
+        emitSwitchBinding(
+          (l) => mount.push(l),
+          use,
+          "target" as any,
+          branches,
+          elseChildren
+        );
         i = consumedTo;
         continue;
       }
       if (typeof a[":for"] === "string") {
-        use("bindFor");
         const parsed = parseForExpression(a[":for"]);
-        const itemVar = parsed.item;
-        const idxVar = parsed.index ?? "__i";
-        const listExpr = parsed.list;
-        const keyExpr =
-          typeof a[":key"] === "string" && a[":key"].trim().length
-            ? a[":key"].trim()
-            : null;
-        const getItems = `() => ((${listExpr}) || [])`;
-        const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
-        const blockFactory = emitBlockFactory(n.children, [itemVar, idxVar]);
-        mount.push(
-          `__stops.push(bindFor(target, ${getItems}, ${keyOf}, ${blockFactory}));`
+        const factory = emitBlockFactory(n.children, [
+          parsed.item,
+          parsed.index ?? "__i",
+        ]);
+        emitForBinding(
+          (l) => mount.push(l),
+          use,
+          "target" as any,
+          a[":for"],
+          a[":key"],
+          factory
         );
         continue;
       }
       // === :mount at top level ===
       if (typeof a[":mount"] === "string") {
-        const baseProps =
-          typeof a[":props"] === "string" ? a[":props"].trim() : "{}";
-        const literalPairs: string[] = [];
-        for (const k in a) {
-          if (k === ":mount" || k === ":props") continue;
-          if (k.startsWith(":")) {
-            const pname = k.slice(1);
-            literalPairs.push(`${JSON.stringify(pname)}: (${a[k]})`);
-          }
-        }
-        for (const k in a) {
-          if (!k.startsWith("@")) continue;
-          const raw = k.slice(1);
-          const parts = raw.split(".");
-          const ev = parts.shift()!;
-          const propName = "on" + ev.charAt(0).toUpperCase() + ev.slice(1);
-          const body = a[k] || "";
-          const handler = `(e)=>{ ${body.replace(/\$event/g, "e")} }`;
-          literalPairs.push(`${JSON.stringify(propName)}: ${handler}`);
-        }
-        const mergedProps =
-          literalPairs.length > 0
-            ? `Object.assign({}, (${baseProps}), { ${literalPairs.join(
-                ", "
-              )} })`
-            : `(${baseProps})`;
         use("effect");
         use("stop");
+        const mergedProps = buildMountPropsObject(a);
         const childVar = vid("child");
         const runVar = vid("run");
         mount.push(
@@ -1023,18 +852,17 @@ export function compileTemplateToIR(
     }
 
     const res = walk(n, undefined, ast, i);
-    if (n.type === "el") {
-      if (
-        !(
-          n.tag === "template" &&
-          (":if" in n.attrs ||
-            ":switch" in n.attrs ||
-            ":for" in n.attrs ||
-            ":mount" in n.attrs)
-        )
-      ) {
-        roots.push(res);
-      }
+    if (
+      n.type === "el" &&
+      !(
+        n.tag === "template" &&
+        (has(n.attrs, ":if") ||
+          has(n.attrs, ":switch") ||
+          has(n.attrs, ":for") ||
+          has(n.attrs, ":mount"))
+      )
+    ) {
+      roots.push(res);
     }
   }
 
@@ -1062,7 +890,7 @@ function parseHTML(src: string): Node[] {
   const roots: Node[] = [];
 
   function push(n: Node) {
-    const parent = stack[stack.length - 1];
+    const parent = stack[0] && (stack[stack.length - 1] as any);
     if (parent && parent.type === "el") parent.children.push(n);
     else roots.push(n);
   }
