@@ -1,69 +1,500 @@
-// Orchestrator: composes helpers into compileTemplateToIR
+// packages/@marwajs/compiler/src/template/compile.ts
 import type { ComponentIR, Binding } from "../ir";
-import type { Node } from "./types";
 
-import { q, has, compileTextExpr, isComponentTag } from "./utils";
-import { splitMods, buildEventHandler } from "./event";
-import { normalizeAttrs } from "./attrs";
-import {
-  CLUSTER_KEYS,
-  asChildren,
-  hasIf,
-  hasSwitch,
-  hasFor,
-  hasMount,
-  collectIfCluster,
-  collectSwitchCluster,
-  parseForExpression,
-} from "./clusters";
-import {
-  emitForBinding,
-  buildMountPropsObject,
-  makeEmitSwitchBinding,
-} from "./emit";
-import { parseHTML } from "./html";
-import { collectWarnings } from "./validation";
+type Node =
+  | { type: "el"; tag: string; attrs: Record<string, string>; children: Node[] }
+  | { type: "text"; value: string };
 
+// Behavior modifiers we pass through to withModifiers
+const BEHAVIOR_MODS = new Set<string>([
+  "stop",
+  "prevent",
+  "self",
+  "once",
+  "capture",
+  "passive",
+]);
+
+// Map key modifiers to DOM e.key values
+const KEY_MAP: Record<string, string[]> = {
+  enter: ["Enter"],
+  esc: ["Escape"],
+  escape: ["Escape"],
+  space: [" ", "Spacebar"],
+  tab: ["Tab"],
+  up: ["ArrowUp"],
+  down: ["ArrowDown"],
+  left: ["ArrowLeft"],
+  right: ["ArrowRight"],
+  delete: ["Delete"],
+  backspace: ["Backspace"],
+};
+
+// ---------- small utils ----------
+const has = (o: any, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+const q = JSON.stringify;
+const trimOr = (s: any, fallback = "") =>
+  typeof s === "string" ? s.trim() : fallback;
+
+function splitMods(raw: string) {
+  const parts = raw.split(".");
+  const type = parts.shift()!;
+  const behavior = parts.filter((m) => BEHAVIOR_MODS.has(m));
+  const keymods = parts.filter((m) => has(KEY_MAP, m));
+  return { type, behavior, keymods };
+}
+
+function buildEventHandler(
+  code: string,
+  behavior: string[],
+  keymods: string[]
+) {
+  const body = code.replace(/\$event/g, "e");
+  let handler = `(e)=>{ ${body} }`;
+
+  if (keymods.length) {
+    const keys = keymods.map((k) => KEY_MAP[k]).flat();
+    handler = `(e)=>{ if (!(${JSON.stringify(
+      keys
+    )}).includes(e.key)) return; ${body} }`;
+  }
+  if (behavior.length) {
+    handler = `withModifiers(${handler}, [${behavior
+      .map((m) => q(m))
+      .join(",")}])`;
+  }
+  return handler;
+}
+
+// ---------- attribute normalization & node helpers ----------
+const UPPER_TAG_RE = /^[A-Z]/;
+const isComponentTag = (tag: string) => UPPER_TAG_RE.test(tag);
+
+function normalizeAttrKey(k: string): { key: string; isEvent: boolean } {
+  if (k.startsWith(":")) return { key: "m-" + k.slice(1), isEvent: false };
+  // "m-on:" is 5 chars -> slice(5) gives after the colon
+  if (k.startsWith("m-on:")) return { key: "@" + k.slice(5), isEvent: true };
+  if (k.startsWith("m-")) return { key: k, isEvent: false };
+  if (k.startsWith("@")) return { key: k, isEvent: true };
+  return { key: k, isEvent: false };
+}
+function normalizeAttrs(attrs: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k in attrs) {
+    const { key } = normalizeAttrKey(k);
+    out[key] = attrs[k];
+  }
+  return out;
+}
+
+// keys that should not turn into generic m-* props/attrs
+const CLUSTER_KEYS = new Set([
+  "m-if",
+  "m-else-if",
+  "m-else",
+  "m-switch",
+  "m-case",
+  "m-default",
+  "m-for",
+  "m-key",
+  "m-mount",
+  "m-props",
+]);
+
+function cloneNodeShallow(n: Node): Node {
+  if (n.type === "text") return { type: "text", value: n.value };
+  const attrs: Record<string, string> = {};
+  const src: any = n;
+  for (const k in src.attrs) {
+    if (!CLUSTER_KEYS.has(k)) attrs[k] = src.attrs[k];
+  }
+  return { type: "el", tag: src.tag, attrs, children: src.children };
+}
+
+// Use the node itself as branch content when cluster is on a non-template elt
+function asChildren(n: Node): Node[] {
+  if (n.type === "el" && n.tag === "template") return n.children;
+  return [cloneNodeShallow(n)];
+}
+
+// Convenience guards (cluster can be on any element)
+const hasIf = (a: any) => typeof a["m-if"] === "string";
+const hasElseIf = (a: any) =>
+  Object.prototype.hasOwnProperty.call(a, "m-else-if");
+const hasElse = (a: any) => Object.prototype.hasOwnProperty.call(a, "m-else");
+const hasSwitch = (a: any) => typeof a["m-switch"] === "string";
+const hasCase = (a: any) => Object.prototype.hasOwnProperty.call(a, "m-case");
+const hasDefault = (a: any) =>
+  Object.prototype.hasOwnProperty.call(a, "m-default");
+const hasFor = (a: any) => typeof a["m-for"] === "string";
+const hasKey = (a: any) => typeof a["m-key"] === "string";
+const hasMount = (a: any) => typeof a["m-mount"] === "string";
+
+// ---- :for parser ----
+function parseForExpression(src: string): {
+  item: string;
+  index?: string;
+  list: string;
+} {
+  const re =
+    /^\s*(?:\(\s*([A-Za-z_$][\w$]*)\s*,\s*([A-Za-z_$][\w$]*)\s*\)|([A-Za-z_$][\w$]*))\s+in\s+([\s\S]+?)\s*$/;
+  const m = re.exec(src);
+  if (!m) return { item: "item", index: "__i", list: src.trim() };
+  const item = (m[1] || m[3]).trim();
+  const index = m[2] ? m[2].trim() : undefined;
+  const list = m[4].trim();
+  return { item, index, list };
+}
+
+// ---------- interpolation ----------
+function compileTextExpr(raw: string): string | null {
+  const re = /\{\{\s*([^}]+?)\s*\}\}/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  const parts: string[] = [];
+  while ((m = re.exec(raw))) {
+    const staticPart = raw.slice(last, m.index);
+    if (staticPart) parts.push(staticPart.replace(/`/g, "\\`"));
+    parts.push(`\${(${m[1]})}`);
+    last = m.index + m[0].length;
+  }
+  const tail = raw.slice(last);
+  if (!parts.length && !tail) return null;
+  if (tail) parts.push(tail.replace(/`/g, "\\`"));
+  if (parts.length === 1 && !/\$\{/.test(parts[0])) return null;
+  return "`" + parts.join("") + "`";
+}
+
+// ---------- common collectors (if / switch) ----------
+type Branch = { when: string; children: Node[] };
+
+function collectIfCluster(
+  siblings: Node[],
+  startIndex: number
+): { branches: Branch[]; elseChildren?: Node[]; consumedTo: number } {
+  const first = siblings[startIndex] as any;
+  first.attrs = normalizeAttrs(first.attrs || {});
+  const branches: Branch[] = [
+    { when: `() => ((${first.attrs["m-if"]}))`, children: asChildren(first) },
+  ];
+  let elseChildren: Node[] | undefined;
+  let j = startIndex + 1;
+
+  while (j < siblings.length) {
+    const sib: any = siblings[j];
+    if (sib.type !== "el") break;
+    sib.attrs = normalizeAttrs(sib.attrs || {});
+    if (!(hasElseIf(sib.attrs) || hasElse(sib.attrs))) break;
+
+    if (hasElseIf(sib.attrs)) {
+      branches.push({
+        when: `() => ((${sib.attrs["m-else-if"]}))`,
+        children: asChildren(sib),
+      });
+      j++;
+      continue;
+    }
+    elseChildren = asChildren(sib);
+    j++;
+    break;
+  }
+  return { branches, elseChildren, consumedTo: j - 1 };
+}
+
+function collectSwitchCluster(
+  switchExpr: string,
+  siblings: Node[],
+  startIndex: number
+): { branches: Branch[]; elseChildren?: Node[]; consumedTo: number } {
+  const branches: Branch[] = [];
+  let elseChildren: Node[] | undefined;
+  let j = startIndex + 1;
+
+  while (j < siblings.length) {
+    const sib: any = siblings[j];
+    if (sib.type !== "el") break;
+    sib.attrs = normalizeAttrs(sib.attrs || {});
+    if (!(hasCase(sib.attrs) || hasDefault(sib.attrs))) break;
+
+    if (hasCase(sib.attrs)) {
+      const c = (sib.attrs["m-case"] ?? "").trim();
+      branches.push({
+        when: `() => (((${switchExpr})) === ((${c})))`,
+        children: asChildren(sib),
+      });
+      j++;
+      continue;
+    }
+    elseChildren = asChildren(sib);
+    j++;
+    break;
+  }
+  return { branches, elseChildren, consumedTo: j - 1 };
+}
+
+// ---------- shared emit helpers ----------
+function emitForBinding(
+  push: (line: string) => void,
+  use: (n: string) => void,
+  parentVar: string,
+  forSrc: string,
+  keySrc: string | undefined,
+  factory: string
+) {
+  use("bindFor");
+  const parsed = parseForExpression(forSrc);
+  const itemVar = parsed.item;
+  const idxVar = parsed.index ?? "__i";
+  const listExpr = parsed.list;
+  const keyExpr =
+    typeof keySrc === "string" && keySrc.trim().length ? keySrc.trim() : null;
+  const getItems = `() => ((${listExpr}) || [])`;
+  const keyOf = `(${itemVar}, ${idxVar}) => (${keyExpr ?? idxVar})`;
+  push(
+    `__stops.push(bindFor(${parentVar}, ${getItems}, ${keyOf}, ${factory}));`
+  );
+}
+
+function buildMountPropsObject(attrs: Record<string, string>): string {
+  const baseProps = trimOr(attrs["m-props"], "{}");
+  const pairs: string[] = [];
+
+  // m-* props (skip clusters and known reactive keys)
+  for (const k in attrs) {
+    if (CLUSTER_KEYS.has(k)) continue;
+    if (k.startsWith("m-")) {
+      const pname = k.slice(2);
+      if (
+        pname === "text" ||
+        pname === "class" ||
+        pname === "style" ||
+        pname === "show" ||
+        pname.startsWith("model") ||
+        pname === "props" ||
+        pname === "mount" ||
+        pname === "if" ||
+        pname === "else-if" ||
+        pname === "else" ||
+        pname === "switch" ||
+        pname === "case" ||
+        pname === "default" ||
+        pname === "for" ||
+        pname === "key"
+      )
+        continue;
+      pairs.push(`${JSON.stringify(pname)}: (${attrs[k]})`);
+    }
+  }
+
+  // @event → onEvent: (e)=>{ ... }
+  for (const k in attrs) {
+    if (!k.startsWith("@")) continue;
+    const raw = k.slice(1); // e.g. "close" or "save.stop"
+    const parts = raw.split(".");
+    const ev = parts.shift()!; // "close"
+    const propName = "on" + ev[0].toUpperCase() + ev.slice(1); // "onClose"
+    const body = attrs[k] || "";
+    const handler = `(e)=>{ ${body.replace(/\$event/g, "e")} }`;
+    pairs.push(`${JSON.stringify(propName)}: ${handler}`);
+  }
+
+  return pairs.length > 0
+    ? `Object.assign({}, (${baseProps}), { ${pairs.join(", ")} })`
+    : `(${baseProps})`;
+}
+
+// ---------- VALIDATION (parser-time warnings) ----------
+type Warning = {
+  code: string;
+  message: string;
+  path: number[]; // index path in the tree, e.g., [0,2,1]
+  tag?: string;
+};
+
+function collectWarnings(ast: Node[]): Warning[] {
+  const warnings: Warning[] = [];
+
+  const pushWarn = (w: Warning) => warnings.push(w);
+
+  // Primary control on a single node
+  function primaryControls(n: { tag: string; attrs: Record<string, string> }) {
+    const a = n.attrs;
+    const list: string[] = [];
+    if (hasIf(a)) list.push("m-if");
+    if (hasSwitch(a)) list.push("m-switch");
+    if (hasFor(a)) list.push("m-for");
+    if (hasMount(a)) list.push("m-mount");
+    if (isComponentTag(n.tag)) list.push("<Component>");
+    return list;
+  }
+
+  function validateNode(n: Node, path: number[]) {
+    if (n.type !== "el") return;
+
+    // Normalize once for validations
+    const a = ((n as any).attrs = normalizeAttrs((n as any).attrs || {}));
+    const prim = primaryControls(n as any);
+
+    // 1) Multiple primary controls on the same node
+    if (prim.length > 1) {
+      pushWarn({
+        code: "MULTIPLE_PRIMARY",
+        message: `conflict: multiple control directives on the same node: ${prim.join(
+          ", "
+        )}`,
+        path,
+        tag: (n as any).tag,
+      });
+    }
+
+    // 2) m-key without m-for
+    if (hasKey(a) && !hasFor(a)) {
+      pushWarn({
+        code: "KEY_WITHOUT_FOR",
+        message: "`m-key` is only valid together with `m-for`.",
+        path,
+        tag: (n as any).tag,
+      });
+    }
+
+    // 3) combine <Component/> with m-mount (redundant)
+    if (isComponentTag((n as any).tag) && hasMount(a)) {
+      pushWarn({
+        code: "COMPONENT_AND_MOUNT",
+        message:
+          "Using both `<Component/>` and `m-mount` is redundant; use only one.",
+        path,
+        tag: (n as any).tag,
+      });
+    }
+  }
+
+  // Validate sibling relationships for branch directives
+  function validateSiblings(siblings: Node[], basePath: number[]) {
+    for (let i = 0; i < siblings.length; i++) {
+      const n = siblings[i];
+      if (n.type !== "el") continue;
+      const a = ((n as any).attrs = normalizeAttrs((n as any).attrs || {}));
+
+      // else-if / else must immediately follow an if-chain head or previous else-if
+      if (hasElseIf(a) || hasElse(a)) {
+        const prev = siblings[i - 1] as any;
+        const ok =
+          prev &&
+          prev.type === "el" &&
+          (hasIf(normalizeAttrs(prev.attrs || {})) ||
+            hasElseIf(normalizeAttrs(prev.attrs || {})));
+        if (!ok) {
+          pushWarn({
+            code: "MISPLACED_ELSE",
+            message:
+              "`m-else-if`/`m-else` must immediately follow an element with `m-if` or `m-else-if`.",
+            path: basePath.concat(i),
+            tag: (n as any).tag,
+          });
+        }
+        // branches shouldn't carry their own primary controls
+        const prim = primaryControls(n as any).filter((p) => p !== "m-if");
+        if (prim.length) {
+          pushWarn({
+            code: "BRANCH_WITH_PRIMARY",
+            message: `Branch element should not also declare primary controls: ${prim.join(
+              ", "
+            )}`,
+            path: basePath.concat(i),
+            tag: (n as any).tag,
+          });
+        }
+      }
+
+      // case / default must immediately follow a switch head or previous case
+      if (hasCase(a) || hasDefault(a)) {
+        const prev = siblings[i - 1] as any;
+        const prevAttrs =
+          prev && prev.type === "el" ? normalizeAttrs(prev.attrs || {}) : {};
+        const ok =
+          prev &&
+          prev.type === "el" &&
+          (hasSwitch(prevAttrs) || hasCase(prevAttrs));
+        if (!ok) {
+          pushWarn({
+            code: "MISPLACED_CASE",
+            message:
+              "`m-case`/`m-default` must immediately follow an element with `m-switch` or a previous `m-case`.",
+            path: basePath.concat(i),
+            tag: (n as any).tag,
+          });
+        }
+        const prim = primaryControls(n as any).filter((p) => p !== "m-switch");
+        if (prim.length) {
+          pushWarn({
+            code: "CASE_WITH_PRIMARY",
+            message: `Switch branch should not also declare primary controls: ${prim.join(
+              ", "
+            )}`,
+            path: basePath.concat(i),
+            tag: (n as any).tag,
+          });
+        }
+      }
+
+      // Recurse into children
+      validateNode(n, basePath.concat(i));
+      validateSiblings((n as any).children || [], basePath.concat(i));
+    }
+  }
+
+  // root-level
+  validateSiblings(ast, []);
+  return warnings;
+}
+
+// ---------- compiler ----------
 export function compileTemplateToIR(
   html: string,
   { file, name, scopeAttr }: { file: string; name: string; scopeAttr?: string }
 ): ComponentIR {
   const ast = parseHTML(html);
 
-  // Non-fatal parser warnings
+  // PARSER-TIME VALIDATION (non-fatal)
   const warnings = collectWarnings(ast);
 
   const create: string[] = [];
   const mount: string[] = [];
   const bindings: Binding[] = [];
 
-  // Runtime imports used by generated code
-  const extraImports = new Set<string>(["Dom"]);
+  // Track extra runtime imports required by inline factories / control flow
+  const extraImports = new Set<string>();
   const use = (n: string) => extraImports.add(n);
+  use("Dom"); // always used
 
   let id = 0;
   const vid = (p: string) => `_${p}${++id}`;
 
-  // Unified block factory generator
+  // ---------- unified block factory (optionally parameterized) ----------
   function emitBlockFactory(
     children: Node[],
     paramNames: string[] = []
   ): string {
     use("Dom");
+
     let local = 0;
     const lid = (p: string) => `__b_${p}${++local}`;
     const linesCreate: string[] = [];
     const linesMount: string[] = [];
     const linesBind: string[] = [];
 
+    // compile-time locals (variable names for runtime code)
     const rootContainer = lid("root");
     const anchor = lid("a");
     const ROOT = rootContainer;
 
     const insert = (childVar: string, parentVar: string) => {
-      if (parentVar === ROOT)
+      if (parentVar === ROOT) {
         linesMount.push(`Dom.insert(${childVar}, ${parentVar}, __a);`);
-      else linesMount.push(`Dom.insert(${childVar}, ${parentVar});`);
+      } else {
+        linesMount.push(`Dom.insert(${childVar}, ${parentVar});`);
+      }
     };
 
     const mountComponentInline = (
@@ -96,10 +527,6 @@ export function compileTemplateToIR(
       );
     };
 
-    const emitSwitchBinding = makeEmitSwitchBinding((kids: Node[]) =>
-      emitBlockFactory(kids)
-    );
-
     function walkInline(
       n: Node,
       parentVar: string,
@@ -108,6 +535,8 @@ export function compileTemplateToIR(
     ): number {
       if (n.type === "el") {
         const a: any = normalizeAttrs((n as any).attrs || {});
+
+        // clusters on any element
         if (hasIf(a)) {
           const { branches, elseChildren, consumedTo } = collectIfCluster(
             siblings,
@@ -157,6 +586,7 @@ export function compileTemplateToIR(
           mountComponentInline(parentVar, a["m-mount"], a);
           return idx;
         }
+        // <Child/> component tag
         if (isComponentTag((n as any).tag)) {
           mountComponentInline(parentVar, (n as any).tag, a);
           return idx;
@@ -167,9 +597,7 @@ export function compileTemplateToIR(
         const expr = compileTextExpr(n.value);
         const t = lid("t");
         linesCreate.push(
-          `const ${t} = Dom.createText(${
-            expr ? "''" : JSON.stringify(n.value)
-          });`
+          `const ${t} = Dom.createText(${expr ? "''" : q(n.value)});`
         );
         insert(t, parentVar);
         if (expr) {
@@ -179,14 +607,13 @@ export function compileTemplateToIR(
         return idx;
       }
 
+      // element
       const el = lid("e");
       linesCreate.push(
-        `const ${el} = Dom.createElement(${JSON.stringify((n as any).tag)});`
+        `const ${el} = Dom.createElement(${q((n as any).tag)});`
       );
       if (scopeAttr)
-        linesCreate.push(
-          `Dom.setAttr(${el}, ${JSON.stringify(scopeAttr)}, "");`
-        );
+        linesCreate.push(`Dom.setAttr(${el}, ${q(scopeAttr)}, "");`);
 
       const attrs = normalizeAttrs((n as any).attrs || {});
       for (const k in attrs) {
@@ -242,15 +669,14 @@ export function compileTemplateToIR(
           let handler = buildEventHandler(v, behavior, keymods);
           if (behavior.length) use("withModifiers");
           linesBind.push(
-            `__stops.push(onEvent(ctx.app, ${el}, ${JSON.stringify(
-              type
-            )}, ${handler}));`
+            `__stops.push(onEvent(ctx.app, ${el}, ${q(type)}, ${handler}));`
           );
           use("onEvent");
           continue;
         }
 
         if (k.startsWith("m-")) {
+          // generic reactive attr (skip clusters & known)
           if (CLUSTER_KEYS.has(k)) continue;
           const name = k.slice(2);
           if (
@@ -259,31 +685,31 @@ export function compileTemplateToIR(
             name === "style" ||
             name === "show" ||
             name.startsWith("model")
-          )
+          ) {
             continue;
+          }
           linesBind.push(
-            `__stops.push(bindAttr(${el}, ${JSON.stringify(
-              name
-            )}, () => (${v})));`
+            `__stops.push(bindAttr(${el}, ${q(name)}, () => (${v})));`
           );
           use("bindAttr");
           continue;
         }
 
-        linesCreate.push(
-          `Dom.setAttr(${el}, ${JSON.stringify(k)}, ${JSON.stringify(v)});`
-        );
+        linesCreate.push(`Dom.setAttr(${el}, ${q(k)}, ${q(v)});`);
       }
 
       const kids = (n as any).children as Node[];
       for (let i = 0; i < kids.length; i++)
         i = walkInline(kids[i], el, kids, i);
+
       insert(el, parentVar);
       return idx;
     }
 
-    for (let i = 0; i < children.length; i++)
+    // compile-time walk of children to fill lines*
+    for (let i = 0; i < children.length; i++) {
       i = walkInline(children[i], ROOT, children, i);
+    }
 
     const params = paramNames.length ? `(${paramNames.join(", ")})` : `()`;
     return `${params} => {
@@ -307,10 +733,27 @@ export function compileTemplateToIR(
 }`;
   }
 
-  const emitSwitchBinding = makeEmitSwitchBinding((kids: Node[]) =>
-    emitBlockFactory(kids)
-  );
+  // ---------- now that emitBlockFactory exists, define emitSwitchBinding ----------
+  function emitSwitchBinding(
+    push: (line: string) => void,
+    use: (n: string) => void,
+    parentVar: string,
+    branches: { when: string; children: Node[] }[],
+    elseChildren?: Node[]
+  ) {
+    use("bindSwitch");
+    const rec = (b: { when: string; children: Node[] }) =>
+      `{ when: (${b.when}), factory: (${emitBlockFactory(b.children)}) }`;
+    const arr = `[${branches.map(rec).join(", ")}]`;
+    if (elseChildren && elseChildren.length) {
+      const ef = emitBlockFactory(elseChildren);
+      push(`__stops.push(bindSwitch(${parentVar}, ${arr}, ${ef}));`);
+    } else {
+      push(`__stops.push(bindSwitch(${parentVar}, ${arr}));`);
+    }
+  }
 
+  // ---------- main walker ----------
   function walk(
     n: Node,
     parentVar?: string,
@@ -320,6 +763,7 @@ export function compileTemplateToIR(
     if (n.type === "el") {
       const a: any = normalizeAttrs((n as any).attrs || {});
 
+      // clusters on any element at this level
       if (parentVar && siblings && typeof idx === "number") {
         if (hasIf(a)) {
           const { branches, elseChildren } = collectIfCluster(siblings, idx);
@@ -364,6 +808,7 @@ export function compileTemplateToIR(
           return parentVar;
         }
         if (hasMount(a)) {
+          // treat element as mount host (props/events from attrs)
           use("effect");
           use("stop");
           const childVar = vid("child");
@@ -391,6 +836,7 @@ export function compileTemplateToIR(
         }
       }
 
+      // component tag at this level
       if (isComponentTag((n as any).tag)) {
         const tag = (n as any).tag;
         use("effect");
@@ -426,20 +872,16 @@ export function compileTemplateToIR(
       if (!n.value || n.value.trim() === "") return parentVar || "";
       const expr = compileTextExpr(n.value);
       const t = vid("t");
-      create.push(
-        `const ${t} = Dom.createText(${expr ? "''" : JSON.stringify(n.value)});`
-      );
+      create.push(`const ${t} = Dom.createText(${expr ? "''" : q(n.value)});`);
       if (parentVar) mount.push(`Dom.insert(${t}, ${parentVar});`);
       if (expr) bindings.push({ kind: "text", target: t, expr });
       return t;
     }
 
+    // element (standard DOM)
     const el = vid("e");
-    create.push(
-      `const ${el} = Dom.createElement(${JSON.stringify((n as any).tag)});`
-    );
-    if (scopeAttr)
-      create.push(`Dom.setAttr(${el}, ${JSON.stringify(scopeAttr)}, "");`);
+    create.push(`const ${el} = Dom.createElement(${q((n as any).tag)});`);
+    if (scopeAttr) create.push(`Dom.setAttr(${el}, ${q(scopeAttr)}, "");`);
 
     const attrs = normalizeAttrs((n as any).attrs || {});
     for (const k in attrs) {
@@ -495,6 +937,7 @@ export function compileTemplateToIR(
       }
 
       if (k.startsWith("m-")) {
+        // generic reactive attr (skip clusters & known)
         if (CLUSTER_KEYS.has(k)) continue;
         const name = k.slice(2);
         if (
@@ -503,17 +946,17 @@ export function compileTemplateToIR(
           name === "style" ||
           name === "show" ||
           name.startsWith("model")
-        )
+        ) {
           continue;
+        }
         bindings.push({ kind: "attr", target: el, name, expr: v });
         continue;
       }
 
-      create.push(
-        `Dom.setAttr(${el}, ${JSON.stringify(k)}, ${JSON.stringify(v)});`
-      );
+      create.push(`Dom.setAttr(${el}, ${q(k)}, ${q(v)});`);
     }
 
+    // handle children including nested clusters/component & mount
     for (let i = 0; i < (n as any).children.length; i++) {
       const c = (n as any).children[i];
 
@@ -592,7 +1035,8 @@ export function compileTemplateToIR(
           );
           continue;
         }
-        if ((c as any).type === "el" && isComponentTag((c as any).tag)) {
+        // <Child/> as child component
+        if (isComponentTag((c as any).tag)) {
           const tag = (c as any).tag;
           use("effect");
           use("stop");
@@ -629,13 +1073,14 @@ export function compileTemplateToIR(
     return el;
   }
 
-  // Roots
+  // ---------- roots ----------
   const roots: string[] = [];
   for (let i = 0; i < ast.length; i++) {
     const n = ast[i];
 
     if (n.type === "el") {
       const a: any = normalizeAttrs((n as any).attrs || {});
+
       if (hasIf(a)) {
         const { branches, elseChildren, consumedTo } = collectIfCluster(ast, i);
         emitSwitchBinding(
@@ -707,6 +1152,7 @@ export function compileTemplateToIR(
         continue;
       }
 
+      // Root-level <Child/>
       if (isComponentTag((n as any).tag)) {
         const tag = (n as any).tag;
         use("effect");
@@ -740,10 +1186,10 @@ export function compileTemplateToIR(
     if (
       n.type === "el" &&
       !(
-        has(normalizeAttrs((n as any).attrs || {}), "m-if") ||
-        has(normalizeAttrs((n as any).attrs || {}), "m-switch") ||
-        has(normalizeAttrs((n as any).attrs || {}), "m-for") ||
-        has(normalizeAttrs((n as any).attrs || {}), "m-mount") ||
+        has(normalizeAttrs(n.attrs || {}), "m-if") ||
+        has(normalizeAttrs(n.attrs || {}), "m-switch") ||
+        has(normalizeAttrs(n.attrs || {}), "m-for") ||
+        has(normalizeAttrs(n.attrs || {}), "m-mount") ||
         isComponentTag((n as any).tag)
       )
     ) {
@@ -763,7 +1209,7 @@ export function compileTemplateToIR(
     bindings,
   };
 
-  // Accumulate required imports
+  // gather imports needed by top-level bindings
   for (const b of bindings as any[]) {
     switch (b.kind) {
       case "text":
@@ -791,6 +1237,56 @@ export function compileTemplateToIR(
   }
 
   (ir as any).imports = Array.from(extraImports);
-  (ir as any).warnings = warnings.map((w) => w.message);
+  (ir as any).warnings = warnings.map(w => w.message);
   return ir;
+}
+
+// --- minimal HTML tokenizer (keeps meaningful spaces) ---
+function parseHTML(src: string): Node[] {
+  const re = /<\/?([A-Za-z][\w-]*)([^>]*)>|([^<]+)/g;
+  const attrRe = /([:@.\w-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>=]+)))?/g;
+  const stack: Node[] = [];
+  const roots: Node[] = [];
+
+  function push(n: Node) {
+    const parent = stack[stack.length - 1];
+    if (parent && parent.type === "el") (parent as any).children.push(n);
+    else roots.push(n);
+  }
+
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) {
+    if (m[3]) {
+      const txt = m[3];
+      if (txt && txt.trim() !== "") push({ type: "text", value: txt });
+      continue;
+    }
+    const tag = m[1];
+    const rawAttrs = m[2] ?? "";
+    if (m[0][1] === "/") {
+      while (stack.length) {
+        const top = stack.pop()!;
+        if (top.type === "el" && (top as any).tag === tag) break;
+      }
+    } else {
+      const attrs: Record<string, string> = {};
+      let a: RegExpExecArray | null;
+      while ((a = attrRe.exec(rawAttrs))) {
+        const k = a[1];
+        const v = a[2] ?? a[3] ?? a[4] ?? "";
+        attrs[k] = v;
+      }
+      const el: Node = { type: "el", tag, attrs, children: [] };
+      push(el);
+      const selfClose = /\/\s*>$/.test(m[0]) || isVoid(tag);
+      if (!selfClose) stack.push(el);
+    }
+  }
+  return roots;
+}
+
+function isVoid(tag: string) {
+  return /^(br|hr|img|input|meta|link|source|area|base|col|embed|param|track|wbr)$/i.test(
+    tag
+  );
 }

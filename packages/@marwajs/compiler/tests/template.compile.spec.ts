@@ -1,15 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { compileTemplateToIR } from "../src/template/compile";
-
-// small helper
-function compile(html: string) {
-  const ir = compileTemplateToIR(html, {
-    file: "Test.marwa",
-    name: "TestComp",
-    scopeAttr: "data-s", // any string; present in DOM element creation
-  }) as any; // to read .imports we attached
-  return ir;
-}
+import { compile } from "./test-utils";
 
 const text = (...chunks: string[]) => chunks.join("\n");
 const count = (s: string, needle: RegExp | string) => {
