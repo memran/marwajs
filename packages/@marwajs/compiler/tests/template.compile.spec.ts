@@ -11,6 +11,59 @@ function compile(html: string) {
   return ir;
 }
 
+const text = (...chunks: string[]) => chunks.join("\n");
+const count = (s: string, needle: RegExp | string) => {
+  const re =
+    typeof needle === "string"
+      ? new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")
+      : needle;
+  return (s.match(re) || []).length;
+};
+
+describe("template compiler - negative cases", () => {
+  it("does not duplicate bindSwitch when clusters are separated by unrelated siblings", () => {
+    const ir = compile(
+      text(`<div m-if="a">A</div>`, `<span>plain</span>`, `<div>tail</div>`)
+    );
+    const m = ir.mount.join("\n");
+    expect(count(m, /bindSwitch\(/g)).toBe(1);
+  });
+
+  it("two independent if-clusters produce exactly two bindSwitch (no extra)", () => {
+    const ir = compile(
+      text(`<div m-if="a">A</div>`, `<p>plain</p>`, `<div m-if="b">B</div>`)
+    );
+    const m = ir.mount.join("\n");
+    expect(count(m, /bindSwitch\(/g)).toBe(2);
+  });
+
+  it("conflicting m-if + m-for on the SAME node: should not emit both bindSwitch and bindFor", () => {
+    const ir = compile(`<li m-if="ok" m-for="x in xs">{{x}}</li>`);
+    const out = ir.mount.join("\n") + "\n" + ir.create.join("\n");
+    const hasSwitch = /bindSwitch\(/.test(out);
+    const hasFor = /bindFor\(/.test(out);
+
+    // Current behavior in compiler: one of them should win, but not both.
+    expect(hasSwitch && hasFor).toBe(false);
+
+    // Optional diagnostic if you add warnings later:
+    const warnings: string[] = (ir as any).warnings ?? [];
+    // If diagnostics exist, assert there's a conflict warning.
+    if (warnings.length) {
+      expect(
+        warnings.some(
+          (w) => /conflict/i.test(w) && /m-if/.test(w) && /m-for/.test(w)
+        )
+      ).toBe(true);
+    }
+  });
+
+  it("dangling m-default without preceding m-switch does not emit bindSwitch", () => {
+    const ir = compile(`<div m-default>fallback</div>`);
+    const m = ir.mount.join("\n");
+    expect(m).not.toMatch(/bindSwitch\(/);
+  });
+});
 describe("template compiler - normalization & clusters", () => {
   it("normalizes ':' shorthand to 'm-' for reactive attrs", () => {
     const ir = compile(
