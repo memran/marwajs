@@ -1,6 +1,6 @@
-import type { Branch } from "./types";
-import { CLUSTER_KEYS, parseForExpression } from "./clusters";
-import { trimOr } from "./../template/utils";
+import type { Branch } from "./types.js";
+import { CLUSTER_KEYS, parseForExpression } from "./clusters.js";
+import { trimOr } from "./../template/utils.js";
 
 /**
  * Emits a bindFor(...) statement given a factory string.

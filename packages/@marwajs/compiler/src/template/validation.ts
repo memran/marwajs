@@ -1,5 +1,5 @@
-import type { Node, Warning } from "./types";
-import { normalizeAttrs } from "./attrs";
+import type { Node, Warning } from "./types.js";
+import { normalizeAttrs } from "./attrs.js";
 import {
   hasIf,
   hasSwitch,
@@ -10,8 +10,8 @@ import {
   hasElse,
   hasCase,
   hasDefault,
-} from "./clusters";
-import { isComponentTag } from "./utils";
+} from "./clusters.js";
+import { isComponentTag } from "./utils.js";
 
 // Collect non-fatal warnings during parse time
 export function collectWarnings(ast: Node[]): Warning[] {

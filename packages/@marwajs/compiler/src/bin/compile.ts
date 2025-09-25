@@ -23,8 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Import your SFC compiler
-import { compileSFC } from "../../src/sfc/compileSFC";
-
+import { compileSFC } from "../index.js";
 type Args = {
   in?: string;
   outDir?: string;

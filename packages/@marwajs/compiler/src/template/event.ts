@@ -1,4 +1,4 @@
-import { has } from "./utils";
+import { has } from "./utils.js";
 
 export const BEHAVIOR_MODS = new Set<string>([
   "stop",

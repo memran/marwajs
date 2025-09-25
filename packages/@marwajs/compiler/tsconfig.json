@@ -1,15 +1,15 @@
 {
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src",
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
     "outDir": "dist",
-    "preserveShebang": true,
-    "module": "ES2020",
-    "moduleResolution": "Bundler",
-    "types": ["node", "vitest/globals"],
-    "paths": {
-      "@marwajs/core": ["../../@marwajs/core/src"]
-    }
+    "declaration": true,
+    "strict": true,
+    "sourceMap": true,
+    "verbatimModuleSyntax": true,
+    "types": ["node"]
   },
   "include": ["src", "bin"]
 }

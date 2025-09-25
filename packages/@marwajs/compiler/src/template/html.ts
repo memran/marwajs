@@ -1,4 +1,4 @@
-import type { Node } from "./types";
+import type { Node } from "./types.js";
 
 export function isVoid(tag: string) {
   return /^(br|hr|img|input|meta|link|source|area|base|col|embed|param|track|wbr)$/i.test(

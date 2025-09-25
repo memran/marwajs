@@ -1,4 +1,4 @@
-import type { ComponentIR } from "../ir";
+import type { ComponentIR } from "../ir.js";
 
 const ir: ComponentIR & { imports?: string[]; prelude?: string[] } = {
   file: "Hello.marwa",

@@ -1,4 +1,4 @@
-import type { Node } from "./types";
+import type { Node } from "./types.js";
 
 const UPPER_TAG_RE = /^[A-Z]/;
 

@@ -1,10 +1,10 @@
 // Orchestrator: composes helpers into compileTemplateToIR
-import type { ComponentIR, Binding } from "../ir";
-import type { Node } from "./types";
+import type { ComponentIR, Binding } from "../ir.js";
+import type { Node } from "./types.js";
 
-import { q, has, compileTextExpr, isComponentTag } from "./utils";
-import { splitMods, buildEventHandler } from "./event";
-import { normalizeAttrs } from "./attrs";
+import { q, has, compileTextExpr, isComponentTag } from "./utils.js";
+import { splitMods, buildEventHandler } from "./event.js";
+import { normalizeAttrs } from "./attrs.js";
 import {
   CLUSTER_KEYS,
   asChildren,
@@ -15,14 +15,14 @@ import {
   collectIfCluster,
   collectSwitchCluster,
   parseForExpression,
-} from "./clusters";
+} from "./clusters.js";
 import {
   emitForBinding,
   buildMountPropsObject,
   makeEmitSwitchBinding,
-} from "./emit";
-import { parseHTML } from "./html";
-import { collectWarnings } from "./validation";
+} from "./emit.js";
+import { parseHTML } from "./html.js";
+import { collectWarnings } from "./validation.js";
 
 export function compileTemplateToIR(
   html: string,

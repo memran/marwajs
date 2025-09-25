@@ -1,4 +1,4 @@
-import type { ComponentIR, Binding } from "./ir";
+import type { ComponentIR, Binding } from "./ir.js";
 
 // Keep this minimal; we’ll add selectively based on bindings
 const BASE_IMPORTS = new Set(["defineComponent"]);
