@@ -49,12 +49,14 @@ function buildEventHandler(
   behavior: string[],
   keymods: string[]
 ) {
-  let handler = `(e)=>{ ${code} }`;
+  const body = code.replace(/\$event/g, "e");
+  let handler = `(e)=>{ ${body} }`;
+
   if (keymods.length) {
     const keys = keymods.map((k) => KEY_MAP[k]).flat();
     handler = `(e)=>{ if (!(${JSON.stringify(
       keys
-    )}).includes(e.key)) return; ${code} }`;
+    )}).includes(e.key)) return; ${body} }`;
   }
   if (behavior.length) {
     handler = `withModifiers(${handler}, [${behavior
@@ -63,6 +65,67 @@ function buildEventHandler(
   }
   return handler;
 }
+
+// ---------- attribute normalization & node helpers ----------
+const UPPER_TAG_RE = /^[A-Z]/;
+
+function normalizeAttrKey(k: string): { key: string; isEvent: boolean } {
+  if (k.startsWith(":")) return { key: "m-" + k.slice(1), isEvent: false };
+  if (k.startsWith("m-on:")) return { key: "@" + k.slice(5), isEvent: true };
+  if (k.startsWith("m-")) return { key: k, isEvent: false };
+  if (k.startsWith("@")) return { key: k, isEvent: true };
+  return { key: k, isEvent: false };
+}
+function normalizeAttrs(attrs: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k in attrs) {
+    const { key } = normalizeAttrKey(k);
+    out[key] = attrs[k];
+  }
+  return out;
+}
+
+// keys that should not turn into generic m-* props/attrs
+const CLUSTER_KEYS = new Set([
+  "m-if",
+  "m-else-if",
+  "m-else",
+  "m-switch",
+  "m-case",
+  "m-default",
+  "m-for",
+  "m-key",
+  "m-mount",
+  "m-props",
+]);
+
+function cloneNodeShallow(n: Node): Node {
+  if (n.type === "text") return { type: "text", value: n.value };
+  const attrs: Record<string, string> = {};
+  const src: any = n;
+  for (const k in src.attrs) {
+    if (!CLUSTER_KEYS.has(k)) attrs[k] = src.attrs[k];
+  }
+  return { type: "el", tag: src.tag, attrs, children: src.children };
+}
+
+// Use the node itself as branch content when cluster is on a non-template elt
+function asChildren(n: Node): Node[] {
+  if (n.type === "el" && n.tag === "template") return n.children;
+  return [cloneNodeShallow(n)];
+}
+
+// Convenience guards (cluster can be on any element)
+const hasIf = (a: any) => typeof a["m-if"] === "string";
+const hasElseIf = (a: any) => typeof a["m-else-if"] === "string";
+const hasElse = (a: any) => Object.prototype.hasOwnProperty.call(a, "m-else");
+const hasSwitch = (a: any) => typeof a["m-switch"] === "string";
+const hasCase = (a: any) => Object.prototype.hasOwnProperty.call(a, "m-case");
+const hasDefault = (a: any) =>
+  Object.prototype.hasOwnProperty.call(a, "m-default");
+const hasFor = (a: any) => typeof a["m-for"] === "string";
+const hasKey = (a: any) => typeof a["m-key"] === "string";
+const hasMount = (a: any) => typeof a["m-mount"] === "string";
 
 // ---- :for parser ----
 function parseForExpression(src: string): {
@@ -101,31 +164,34 @@ function compileTextExpr(raw: string): string | null {
 
 // ---------- common collectors (if / switch) ----------
 type Branch = { when: string; children: Node[] };
+
 function collectIfCluster(
   siblings: Node[],
   startIndex: number
 ): { branches: Branch[]; elseChildren?: Node[]; consumedTo: number } {
   const first = siblings[startIndex] as any;
+  first.attrs = normalizeAttrs(first.attrs || {});
   const branches: Branch[] = [
-    { when: `() => ((${first.attrs[":if"]}))`, children: first.children },
+    { when: `() => ((${first.attrs["m-if"]}))`, children: asChildren(first) },
   ];
   let elseChildren: Node[] | undefined;
   let j = startIndex + 1;
+
   while (j < siblings.length) {
     const sib: any = siblings[j];
-    if (sib.type !== "el" || sib.tag !== "template") break;
-    const hasElseIf = typeof sib.attrs[":else-if"] === "string";
-    const hasElse = has(sib.attrs, ":else");
-    if (!hasElseIf && !hasElse) break;
-    if (hasElseIf) {
+    if (sib.type !== "el") break;
+    sib.attrs = normalizeAttrs(sib.attrs || {});
+    if (!(hasElseIf(sib.attrs) || hasElse(sib.attrs))) break;
+
+    if (hasElseIf(sib.attrs)) {
       branches.push({
-        when: `() => ((${sib.attrs[":else-if"]}))`,
-        children: sib.children,
+        when: `() => ((${sib.attrs["m-else-if"]}))`,
+        children: asChildren(sib),
       });
       j++;
       continue;
     }
-    elseChildren = sib.children;
+    elseChildren = asChildren(sib);
     j++;
     break;
   }
@@ -140,22 +206,23 @@ function collectSwitchCluster(
   const branches: Branch[] = [];
   let elseChildren: Node[] | undefined;
   let j = startIndex + 1;
+
   while (j < siblings.length) {
     const sib: any = siblings[j];
-    if (sib.type !== "el" || sib.tag !== "template") break;
-    const hasCase = has(sib.attrs, ":case");
-    const hasDefault = has(sib.attrs, ":default");
-    if (!hasCase && !hasDefault) break;
-    if (hasCase) {
-      const c = trimOr(sib.attrs[":case"]);
+    if (sib.type !== "el") break;
+    sib.attrs = normalizeAttrs(sib.attrs || {});
+    if (!(hasCase(sib.attrs) || hasDefault(sib.attrs))) break;
+
+    if (hasCase(sib.attrs)) {
+      const c = (sib.attrs["m-case"] ?? "").trim();
       branches.push({
         when: `() => (((${switchExpr})) === ((${c})))`,
-        children: sib.children,
+        children: asChildren(sib),
       });
       j++;
       continue;
     }
-    elseChildren = sib.children;
+    elseChildren = asChildren(sib);
     j++;
     break;
   }
@@ -163,7 +230,6 @@ function collectSwitchCluster(
 }
 
 // ---------- shared emit helpers ----------
-
 function emitForBinding(
   push: (line: string) => void,
   use: (n: string) => void,
@@ -187,25 +253,46 @@ function emitForBinding(
 }
 
 function buildMountPropsObject(attrs: Record<string, string>): string {
-  const baseProps = trimOr(attrs[":props"], "{}");
+  const baseProps = trimOr(attrs["m-props"], "{}");
   const pairs: string[] = [];
 
-  // attribute props
+  // m-* props (skip clusters and known reactive keys)
   for (const k in attrs) {
-    if (k === ":mount" || k === ":props") continue;
-    if (k.startsWith(":")) {
-      const pname = k.slice(1);
-      pairs.push(`${q(pname)}: (${attrs[k]})`);
+    if (CLUSTER_KEYS.has(k)) continue;
+    if (k.startsWith("m-")) {
+      const pname = k.slice(2);
+      if (
+        pname === "text" ||
+        pname === "class" ||
+        pname === "style" ||
+        pname === "show" ||
+        pname.startsWith("model") ||
+        pname === "props" ||
+        pname === "mount" ||
+        pname === "if" ||
+        pname === "else-if" ||
+        pname === "else" ||
+        pname === "switch" ||
+        pname === "case" ||
+        pname === "default" ||
+        pname === "for" ||
+        pname === "key"
+      )
+        continue;
+      pairs.push(`${JSON.stringify(pname)}: (${attrs[k]})`);
     }
   }
-  // event props → onX
+
+  // @event → onEvent: (e)=>{ ... }
   for (const k in attrs) {
     if (!k.startsWith("@")) continue;
-    const { type } = splitMods(k.slice(1)); // ignore modifiers for component props
-    const propName = "on" + type.charAt(0).toUpperCase() + type.slice(1);
+    const raw = k.slice(1); // e.g. "close" or "save.stop"
+    const parts = raw.split(".");
+    const ev = parts.shift()!; // "close"
+    const propName = "on" + ev[0].toUpperCase() + ev.slice(1); // "onClose"
     const body = attrs[k] || "";
     const handler = `(e)=>{ ${body.replace(/\$event/g, "e")} }`;
-    pairs.push(`${q(propName)}: ${handler}`);
+    pairs.push(`${JSON.stringify(propName)}: ${handler}`);
   }
 
   return pairs.length > 0
@@ -257,29 +344,11 @@ export function compileTemplateToIR(
       }
     };
 
-    // inline cluster emitters use the same helpers as top-level
-    const inlineFor = (parentVar: string, node: any): number => {
-      const a = node.attrs || {};
-      if (typeof a[":for"] !== "string") return -1;
-      const parsed = parseForExpression(a[":for"]);
-      const factory = emitBlockFactory(node.children, [
-        parsed.item,
-        parsed.index ?? "__i",
-      ]);
-      emitForBinding(
-        (l) => linesBind.push(l),
-        use,
-        parentVar,
-        a[":for"],
-        a[":key"],
-        factory
-      );
-      return 0;
-    };
-
-    const inlineMount = (parentVar: string, node: any): number => {
-      const a = node.attrs || {};
-      if (typeof a[":mount"] !== "string") return -1;
+    const mountComponentInline = (
+      parentVar: string,
+      tag: string,
+      a: Record<string, string>
+    ) => {
       use("effect");
       use("stop");
       const childVar = lid("child");
@@ -292,7 +361,7 @@ export function compileTemplateToIR(
   const ${runVar} = effect(() => {
     const __p = (${mergedProps});
     if (!${childVar}) {
-      const __C = (${a[":mount"]});
+      const __C = (${tag});
       ${childVar} = __C(__p, { app: ctx.app });
       ${childVar}.mount(${parentVar}, null);
     } else {
@@ -303,7 +372,6 @@ export function compileTemplateToIR(
 }
 `.trim()
       );
-      return 0;
     };
 
     function walkInline(
@@ -312,9 +380,11 @@ export function compileTemplateToIR(
       siblings: Node[],
       idx: number
     ): number {
-      if (n.type === "el" && n.tag === "template") {
-        const a: any = n.attrs || {};
-        if (typeof a[":if"] === "string") {
+      if (n.type === "el") {
+        const a: any = normalizeAttrs((n as any).attrs || {});
+
+        // clusters on any element
+        if (hasIf(a)) {
           const { branches, elseChildren, consumedTo } = collectIfCluster(
             siblings,
             idx
@@ -328,9 +398,9 @@ export function compileTemplateToIR(
           );
           return consumedTo;
         }
-        if (typeof a[":switch"] === "string") {
+        if (hasSwitch(a)) {
           const { branches, elseChildren, consumedTo } = collectSwitchCluster(
-            a[":switch"],
+            a["m-switch"],
             siblings,
             idx
           );
@@ -343,19 +413,38 @@ export function compileTemplateToIR(
           );
           return consumedTo;
         }
-        const f = inlineFor(parentVar, n as any);
-        if (f >= 0) return idx;
-        const m = inlineMount(parentVar, n as any);
-        if (m >= 0) return idx;
+        if (hasFor(a)) {
+          const parsed = parseForExpression(a["m-for"]);
+          const factory = emitBlockFactory(asChildren(n), [
+            parsed.item,
+            parsed.index ?? "__i",
+          ]);
+          emitForBinding(
+            (l) => linesBind.push(l),
+            use,
+            parentVar,
+            a["m-for"],
+            a["m-key"],
+            factory
+          );
+          return idx;
+        }
+        if (hasMount(a)) {
+          mountComponentInline(parentVar, a["m-mount"], a);
+          return idx;
+        }
+        // <Child/> component tag
+        if (UPPER_TAG_RE.test((n as any).tag)) {
+          mountComponentInline(parentVar, (n as any).tag, a);
+          return idx;
+        }
       }
 
       if (n.type === "text") {
         const expr = compileTextExpr(n.value);
         const t = lid("t");
         linesCreate.push(
-          `const ${t} = Dom.createText(${
-            expr ? "''" : JSON.stringify(n.value)
-          });`
+          `const ${t} = Dom.createText(${expr ? "''" : q(n.value)});`
         );
         insert(t, parentVar);
         if (expr) {
@@ -368,18 +457,16 @@ export function compileTemplateToIR(
       // element
       const el = lid("e");
       linesCreate.push(
-        `const ${el} = Dom.createElement(${JSON.stringify(n.tag)});`
+        `const ${el} = Dom.createElement(${q((n as any).tag)});`
       );
       if (scopeAttr)
-        linesCreate.push(
-          `Dom.setAttr(${el}, ${JSON.stringify(scopeAttr)}, "");`
-        );
+        linesCreate.push(`Dom.setAttr(${el}, ${q(scopeAttr)}, "");`);
 
-      const attrs = (n as any).attrs || {};
+      const attrs = normalizeAttrs((n as any).attrs || {});
       for (const k in attrs) {
         const v = attrs[k];
 
-        if (k === ":text") {
+        if (k === "m-text") {
           const tn = lid("t");
           linesCreate.push(`const ${tn} = Dom.createText('');`);
           linesMount.push(`Dom.insert(${tn}, ${el});`);
@@ -387,17 +474,17 @@ export function compileTemplateToIR(
           use("bindText");
           continue;
         }
-        if (k === ":class") {
+        if (k === "m-class") {
           linesBind.push(`__stops.push(bindClass(${el}, () => (${v})));`);
           use("bindClass");
           continue;
         }
-        if (k === ":style") {
+        if (k === "m-style") {
           linesBind.push(`__stops.push(bindStyle(${el}, () => (${v})));`);
           use("bindStyle");
           continue;
         }
-        if (k === ":show") {
+        if (k === "m-show") {
           linesBind.push(`__stops.push(bindShow(${el}, () => !!(${v})));`);
           use("bindShow");
           continue;
@@ -429,28 +516,33 @@ export function compileTemplateToIR(
           let handler = buildEventHandler(v, behavior, keymods);
           if (behavior.length) use("withModifiers");
           linesBind.push(
-            `__stops.push(onEvent(ctx.app, ${el}, ${JSON.stringify(
-              type
-            )}, ${handler}));`
+            `__stops.push(onEvent(ctx.app, ${el}, ${q(type)}, ${handler}));`
           );
           use("onEvent");
           continue;
         }
 
-        if (k.startsWith(":")) {
-          const name = k.slice(1);
+        if (k.startsWith("m-")) {
+          // generic reactive attr (skip clusters & known)
+          if (CLUSTER_KEYS.has(k)) continue;
+          const name = k.slice(2);
+          if (
+            name === "text" ||
+            name === "class" ||
+            name === "style" ||
+            name === "show" ||
+            name.startsWith("model")
+          ) {
+            continue;
+          }
           linesBind.push(
-            `__stops.push(bindAttr(${el}, ${JSON.stringify(
-              name
-            )}, () => (${v})));`
+            `__stops.push(bindAttr(${el}, ${q(name)}, () => (${v})));`
           );
           use("bindAttr");
           continue;
         }
 
-        linesCreate.push(
-          `Dom.setAttr(${el}, ${JSON.stringify(k)}, ${JSON.stringify(v)});`
-        );
+        linesCreate.push(`Dom.setAttr(${el}, ${q(k)}, ${q(v)});`);
       }
 
       const kids = (n as any).children as Node[];
@@ -488,7 +580,7 @@ export function compileTemplateToIR(
 }`;
   }
 
-  // ---------- now that emitBlockFactory exists, we can define emitSwitchBinding ----------
+  // ---------- now that emitBlockFactory exists, define emitSwitchBinding ----------
   function emitSwitchBinding(
     push: (line: string) => void,
     use: (n: string) => void,
@@ -515,75 +607,68 @@ export function compileTemplateToIR(
     siblings?: Node[],
     idx?: number
   ): string {
-    // clusters and :mount at same level
-    if (
-      n.type === "el" &&
-      n.tag === "template" &&
-      parentVar &&
-      siblings &&
-      typeof idx === "number"
-    ) {
-      const a: any = n.attrs || {};
+    if (n.type === "el") {
+      const a: any = normalizeAttrs((n as any).attrs || {});
 
-      if (typeof a[":if"] === "string") {
-        const { branches, elseChildren } = collectIfCluster(siblings, idx);
-        emitSwitchBinding(
-          (l) => mount.push(l),
-          use,
-          parentVar,
-          branches,
-          elseChildren
-        );
-        return parentVar;
-      }
-
-      if (typeof a[":switch"] === "string") {
-        const { branches, elseChildren } = collectSwitchCluster(
-          a[":switch"],
-          siblings,
-          idx
-        );
-        emitSwitchBinding(
-          (l) => mount.push(l),
-          use,
-          parentVar,
-          branches,
-          elseChildren
-        );
-        return parentVar;
-      }
-
-      if (typeof a[":for"] === "string") {
-        const parsed = parseForExpression(a[":for"]);
-        const factory = emitBlockFactory(n.children, [
-          parsed.item,
-          parsed.index ?? "__i",
-        ]);
-        emitForBinding(
-          (l) => mount.push(l),
-          use,
-          parentVar,
-          a[":for"],
-          a[":key"],
-          factory
-        );
-        return parentVar;
-      }
-
-      if (typeof a[":mount"] === "string") {
-        use("effect");
-        use("stop");
-        const mergedProps = buildMountPropsObject(a);
-        const childVar = vid("child");
-        const runVar = vid("run");
-        mount.push(
-          `
+      // clusters on any element at this level
+      if (parentVar && siblings && typeof idx === "number") {
+        if (hasIf(a)) {
+          const { branches, elseChildren } = collectIfCluster(siblings, idx);
+          emitSwitchBinding(
+            (l) => mount.push(l),
+            use,
+            parentVar,
+            branches,
+            elseChildren
+          );
+          return parentVar;
+        }
+        if (hasSwitch(a)) {
+          const { branches, elseChildren } = collectSwitchCluster(
+            a["m-switch"],
+            siblings,
+            idx
+          );
+          emitSwitchBinding(
+            (l) => mount.push(l),
+            use,
+            parentVar,
+            branches,
+            elseChildren
+          );
+          return parentVar;
+        }
+        if (hasFor(a)) {
+          const parsed = parseForExpression(a["m-for"]);
+          const factory = emitBlockFactory(asChildren(n), [
+            parsed.item,
+            parsed.index ?? "__i",
+          ]);
+          emitForBinding(
+            (l) => mount.push(l),
+            use,
+            parentVar,
+            a["m-for"],
+            a["m-key"],
+            factory
+          );
+          return parentVar;
+        }
+        if (hasMount(a)) {
+          // treat element as mount host (props/events from attrs)
+          use("effect");
+          use("stop");
+          const childVar = vid("child");
+          const runVar = vid("run");
+          const mergedProps = buildMountPropsObject(a);
+          mount.push(
+            `
 {
   let ${childVar} = null;
   const ${runVar} = effect(() => {
     const __p = (${mergedProps});
     if (!${childVar}) {
-      const __C = (${a[":mount"]});
+      const __C = (${a["m-mount"]});
       ${childVar} = __C(__p, { app: ctx.app });
       ${childVar}.mount(${parentVar}, null);
     } else {
@@ -593,8 +678,40 @@ export function compileTemplateToIR(
   __stops.push(() => { stop(${runVar}); try { ${childVar} && ${childVar}.destroy && ${childVar}.destroy(); } catch {} });
 }
 `.trim()
+          );
+          return parentVar;
+        }
+      }
+
+      // component tag at this level
+      if (UPPER_TAG_RE.test((n as any).tag)) {
+        const tag = (n as any).tag;
+        use("effect");
+        use("stop");
+        const childVar = vid("child");
+        const runVar = vid("run");
+        const mergedProps = buildMountPropsObject(a);
+        const parentCode = parentVar ? parentVar : "target";
+        const anchorArg = parentVar ? "null" : "anchor ?? null";
+        mount.push(
+          `
+{
+  let ${childVar} = null;
+  const ${runVar} = effect(() => {
+    const __p = (${mergedProps});
+    if (!${childVar}) {
+      const __C = (${tag});
+      ${childVar} = __C(__p, { app: ctx.app });
+      ${childVar}.mount(${parentCode}, ${anchorArg});
+    } else {
+      ${childVar}.patch && ${childVar}.patch(__p);
+    }
+  });
+  __stops.push(() => { stop(${runVar}); try { ${childVar} && ${childVar}.destroy && ${childVar}.destroy(); } catch {} });
+}
+`.trim()
         );
-        return parentVar;
+        return parentVar || "";
       }
     }
 
@@ -602,40 +719,37 @@ export function compileTemplateToIR(
       if (!n.value || n.value.trim() === "") return parentVar || "";
       const expr = compileTextExpr(n.value);
       const t = vid("t");
-      create.push(
-        `const ${t} = Dom.createText(${expr ? "''" : JSON.stringify(n.value)});`
-      );
+      create.push(`const ${t} = Dom.createText(${expr ? "''" : q(n.value)});`);
       if (parentVar) mount.push(`Dom.insert(${t}, ${parentVar});`);
       if (expr) bindings.push({ kind: "text", target: t, expr });
       return t;
     }
 
-    // element
+    // element (standard DOM)
     const el = vid("e");
-    create.push(`const ${el} = Dom.createElement(${JSON.stringify(n.tag)});`);
-    if (scopeAttr)
-      create.push(`Dom.setAttr(${el}, ${JSON.stringify(scopeAttr)}, "");`);
+    create.push(`const ${el} = Dom.createElement(${q((n as any).tag)});`);
+    if (scopeAttr) create.push(`Dom.setAttr(${el}, ${q(scopeAttr)}, "");`);
 
-    const attrs = n.attrs || {};
+    const attrs = normalizeAttrs((n as any).attrs || {});
     for (const k in attrs) {
       const v = attrs[k];
 
-      if (k === ":text") {
+      if (k === "m-text") {
         const tn = vid("t");
         create.push(`const ${tn} = Dom.createText('');`);
         mount.push(`Dom.insert(${tn}, ${el});`);
         bindings.push({ kind: "text", target: tn, expr: v });
         continue;
       }
-      if (k === ":class") {
+      if (k === "m-class") {
         bindings.push({ kind: "class", target: el, expr: v });
         continue;
       }
-      if (k === ":style") {
+      if (k === "m-style") {
         bindings.push({ kind: "style", target: el, expr: v });
         continue;
       }
-      if (k === ":show") {
+      if (k === "m-show") {
         bindings.push({ kind: "show", target: el, expr: v });
         continue;
       }
@@ -669,26 +783,35 @@ export function compileTemplateToIR(
         continue;
       }
 
-      if (k.startsWith(":")) {
-        const name = k.slice(1);
+      if (k.startsWith("m-")) {
+        // generic reactive attr (skip clusters & known)
+        if (CLUSTER_KEYS.has(k)) continue;
+        const name = k.slice(2);
+        if (
+          name === "text" ||
+          name === "class" ||
+          name === "style" ||
+          name === "show" ||
+          name.startsWith("model")
+        ) {
+          continue;
+        }
         bindings.push({ kind: "attr", target: el, name, expr: v });
         continue;
       }
 
-      create.push(
-        `Dom.setAttr(${el}, ${JSON.stringify(k)}, ${JSON.stringify(v)});`
-      );
+      create.push(`Dom.setAttr(${el}, ${q(k)}, ${q(v)});`);
     }
 
-    // handle children including nested clusters & :mount
-    for (let i = 0; i < n.children.length; i++) {
-      const c = n.children[i];
+    // handle children including nested clusters/component & mount
+    for (let i = 0; i < (n as any).children.length; i++) {
+      const c = (n as any).children[i];
 
-      if (c.type === "el" && c.tag === "template") {
-        const a: any = c.attrs || {};
-        if (typeof a[":if"] === "string") {
+      if (c.type === "el") {
+        const aChild: any = normalizeAttrs((c as any).attrs || {});
+        if (hasIf(aChild)) {
           const { branches, elseChildren, consumedTo } = collectIfCluster(
-            n.children,
+            (n as any).children,
             i
           );
           emitSwitchBinding(
@@ -701,10 +824,10 @@ export function compileTemplateToIR(
           i = consumedTo;
           continue;
         }
-        if (typeof a[":switch"] === "string") {
+        if (hasSwitch(aChild)) {
           const { branches, elseChildren, consumedTo } = collectSwitchCluster(
-            a[":switch"],
-            n.children,
+            aChild["m-switch"],
+            (n as any).children,
             i
           );
           emitSwitchBinding(
@@ -717,9 +840,9 @@ export function compileTemplateToIR(
           i = consumedTo;
           continue;
         }
-        if (typeof a[":for"] === "string") {
-          const parsed = parseForExpression(a[":for"]);
-          const factory = emitBlockFactory(c.children, [
+        if (hasFor(aChild)) {
+          const parsed = parseForExpression(aChild["m-for"]);
+          const factory = emitBlockFactory(asChildren(c), [
             parsed.item,
             parsed.index ?? "__i",
           ]);
@@ -727,17 +850,16 @@ export function compileTemplateToIR(
             (l) => mount.push(l),
             use,
             el,
-            a[":for"],
-            a[":key"],
+            aChild["m-for"],
+            aChild["m-key"],
             factory
           );
           continue;
         }
-        // === :mount in children ===
-        if (typeof a[":mount"] === "string") {
+        if (hasMount(aChild)) {
           use("effect");
           use("stop");
-          const mergedProps = buildMountPropsObject(a);
+          const mergedProps = buildMountPropsObject(aChild);
           const childVar = vid("child");
           const runVar = vid("run");
           mount.push(
@@ -747,7 +869,35 @@ export function compileTemplateToIR(
   const ${runVar} = effect(() => {
     const __p = (${mergedProps});
     if (!${childVar}) {
-      const __C = (${a[":mount"]});
+      const __C = (${aChild["m-mount"]});
+      ${childVar} = __C(__p, { app: ctx.app });
+      ${childVar}.mount(${el}, null);
+    } else {
+      ${childVar}.patch && ${childVar}.patch(__p);
+    }
+  });
+  __stops.push(() => { stop(${runVar}); try { ${childVar} && ${childVar}.destroy && ${childVar}.destroy(); } catch {} });
+}
+`.trim()
+          );
+          continue;
+        }
+        // <Child/> as child component
+        if (UPPER_TAG_RE.test((c as any).tag)) {
+          const tag = (c as any).tag;
+          use("effect");
+          use("stop");
+          const childVar = vid("child");
+          const runVar = vid("run");
+          const mergedProps = buildMountPropsObject(aChild);
+          mount.push(
+            `
+{
+  let ${childVar} = null;
+  const ${runVar} = effect(() => {
+    const __p = (${mergedProps});
+    if (!${childVar}) {
+      const __C = (${tag});
       ${childVar} = __C(__p, { app: ctx.app });
       ${childVar}.mount(${el}, null);
     } else {
@@ -762,7 +912,7 @@ export function compileTemplateToIR(
         }
       }
 
-      const res = walk(c, el, n.children, i);
+      const res = walk(c, el, (n as any).children, i);
       if (c.type === "el") mount.push(`Dom.insert(${res}, ${el});`);
     }
 
@@ -775,10 +925,10 @@ export function compileTemplateToIR(
   for (let i = 0; i < ast.length; i++) {
     const n = ast[i];
 
-    if (n.type === "el" && n.tag === "template") {
-      const a: any = n.attrs || {};
+    if (n.type === "el") {
+      const a: any = normalizeAttrs((n as any).attrs || {});
 
-      if (typeof a[":if"] === "string") {
+      if (hasIf(a)) {
         const { branches, elseChildren, consumedTo } = collectIfCluster(ast, i);
         emitSwitchBinding(
           (l) => mount.push(l),
@@ -790,9 +940,9 @@ export function compileTemplateToIR(
         i = consumedTo;
         continue;
       }
-      if (typeof a[":switch"] === "string") {
+      if (hasSwitch(a)) {
         const { branches, elseChildren, consumedTo } = collectSwitchCluster(
-          a[":switch"],
+          a["m-switch"],
           ast,
           i
         );
@@ -806,9 +956,9 @@ export function compileTemplateToIR(
         i = consumedTo;
         continue;
       }
-      if (typeof a[":for"] === "string") {
-        const parsed = parseForExpression(a[":for"]);
-        const factory = emitBlockFactory(n.children, [
+      if (hasFor(a)) {
+        const parsed = parseForExpression(a["m-for"]);
+        const factory = emitBlockFactory(asChildren(n), [
           parsed.item,
           parsed.index ?? "__i",
         ]);
@@ -816,14 +966,13 @@ export function compileTemplateToIR(
           (l) => mount.push(l),
           use,
           "target" as any,
-          a[":for"],
-          a[":key"],
+          a["m-for"],
+          a["m-key"],
           factory
         );
         continue;
       }
-      // === :mount at top level ===
-      if (typeof a[":mount"] === "string") {
+      if (hasMount(a)) {
         use("effect");
         use("stop");
         const mergedProps = buildMountPropsObject(a);
@@ -836,7 +985,36 @@ export function compileTemplateToIR(
   const ${runVar} = effect(() => {
     const __p = (${mergedProps});
     if (!${childVar}) {
-      const __C = (${a[":mount"]});
+      const __C = (${a["m-mount"]});
+      ${childVar} = __C(__p, { app: ctx.app });
+      ${childVar}.mount(target, anchor ?? null);
+    } else {
+      ${childVar}.patch && ${childVar}.patch(__p);
+    }
+  });
+  __stops.push(() => { stop(${runVar}); try { ${childVar} && ${childVar}.destroy && ${childVar}.destroy(); } catch {} });
+}
+`.trim()
+        );
+        continue;
+      }
+
+      // Root-level <Child/>
+      if (UPPER_TAG_RE.test((n as any).tag)) {
+        const tag = (n as any).tag;
+        use("effect");
+        use("stop");
+        const childVar = vid("child");
+        const runVar = vid("run");
+        const mergedProps = buildMountPropsObject(a);
+        mount.push(
+          `
+{
+  let ${childVar} = null;
+  const ${runVar} = effect(() => {
+    const __p = (${mergedProps});
+    if (!${childVar}) {
+      const __C = (${tag});
       ${childVar} = __C(__p, { app: ctx.app });
       ${childVar}.mount(target, anchor ?? null);
     } else {
@@ -855,11 +1033,11 @@ export function compileTemplateToIR(
     if (
       n.type === "el" &&
       !(
-        n.tag === "template" &&
-        (has(n.attrs, ":if") ||
-          has(n.attrs, ":switch") ||
-          has(n.attrs, ":for") ||
-          has(n.attrs, ":mount"))
+        has(normalizeAttrs(n.attrs || {}), "m-if") ||
+        has(normalizeAttrs(n.attrs || {}), "m-switch") ||
+        has(normalizeAttrs(n.attrs || {}), "m-for") ||
+        has(normalizeAttrs(n.attrs || {}), "m-mount") ||
+        UPPER_TAG_RE.test(n.tag)
       )
     ) {
       roots.push(res);
@@ -877,7 +1055,32 @@ export function compileTemplateToIR(
     mount: [...rootMounts, ...mount],
     bindings,
   };
-
+  // NEW: pull in imports needed by top-level bindings
+  for (const b of bindings as any[]) {
+    switch (b.kind) {
+      case "text":
+        extraImports.add("bindText");
+        break;
+      case "class":
+        extraImports.add("bindClass");
+        break;
+      case "style":
+        extraImports.add("bindStyle");
+        break;
+      case "show":
+        extraImports.add("bindShow");
+        break;
+      case "attr":
+        extraImports.add("bindAttr");
+        break;
+      case "event":
+        extraImports.add("onEvent");
+        break;
+      case "model":
+        extraImports.add("bindModel");
+        break;
+    }
+  }
   (ir as any).imports = Array.from(extraImports);
   return ir;
 }
@@ -890,8 +1093,8 @@ function parseHTML(src: string): Node[] {
   const roots: Node[] = [];
 
   function push(n: Node) {
-    const parent = stack[0] && (stack[stack.length - 1] as any);
-    if (parent && parent.type === "el") parent.children.push(n);
+    const parent = stack[stack.length - 1];
+    if (parent && parent.type === "el") (parent as any).children.push(n);
     else roots.push(n);
   }
 
@@ -907,7 +1110,7 @@ function parseHTML(src: string): Node[] {
     if (m[0][1] === "/") {
       while (stack.length) {
         const top = stack.pop()!;
-        if (top.type === "el" && top.tag === tag) break;
+        if (top.type === "el" && (top as any).tag === tag) break;
       }
     } else {
       const attrs: Record<string, string> = {};
