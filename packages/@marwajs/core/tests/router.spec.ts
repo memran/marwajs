@@ -87,6 +87,7 @@ describe("router (hash mode)", () => {
     await nextTick();
     expect(host.textContent).toContain("home");
 
+    if (!v.destroy) throw new Error("v.destroy is undefined");
     v.destroy();
   });
 });

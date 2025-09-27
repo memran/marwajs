@@ -5,7 +5,8 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "packages/@*/*"
+    "packages/@*/*",
+    "examples/*"
   ],
   "scripts": {
     "build": "npm run -w @marwajs/core build && npm run -w @marwajs/compiler build && npm run -w create-marwa build",

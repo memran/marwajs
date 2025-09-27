@@ -1,6 +1,5 @@
 # Node.js
 node_modules/
-
 # Environment variables
 .env
 .env.*.local
@@ -8,3 +7,4 @@ node_modules/
 # Build artifacts
 dist/
 build/
+*.tgz

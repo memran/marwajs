@@ -1,5 +1,5 @@
-import type { Node, Branch } from "./types";
-import { normalizeAttrs } from "./attrs";
+import type { Node, Branch } from "./types.js";
+import { normalizeAttrs } from "./attrs.js";
 
 // keys that should not turn into generic m-* props/attrs
 export const CLUSTER_KEYS = new Set([

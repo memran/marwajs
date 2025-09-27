@@ -1,7 +1,7 @@
 // packages/@marwajs/compiler/src/sfc/compileSFC.ts
-import { parseSFC } from "./parse";
-import { compileTemplateToIR } from "../template/compile";
-import { generateComponent } from "../codegen";
+import { parseSFC } from "./parse.js";
+import { compileTemplateToIR } from "../template/compile.js";
+import { generateComponent } from "../codegen.js";
 import crypto from "node:crypto";
 
 /* ----------------------------- small utilities ----------------------------- */

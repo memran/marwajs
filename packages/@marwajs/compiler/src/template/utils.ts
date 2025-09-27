@@ -1,5 +1,4 @@
-import type { Node } from "./types.js";
-
+// packages/@marwajs/compiler/src/template/utils.ts
 const UPPER_TAG_RE = /^[A-Z]/;
 
 export const has = (o: any, k: string) =>

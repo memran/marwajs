@@ -8,10 +8,6 @@ Bootstraps a new app with sensible defaults.
 ## Install
 
 ```sh
-npm create marwa@latest
-```
-
-```sh
 npx create-marwa my-app
 ```
 
