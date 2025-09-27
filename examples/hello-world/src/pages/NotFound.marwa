@@ -2,8 +2,10 @@
   import { router } from "../router";
 </script>
 
-<div style="text-align: center">
-  <h2 style="margin: 12px 0 6px">404 — Not Found</h2>
-  <p class="muted">We couldn't find that page.</p>
-  <p><a href="#/" @click.prevent="router.push('/')">Go home</a></p>
-</div>
+<template>
+  <div style="text-align: center">
+    <h2 style="margin: 12px 0 6px">404 — Not Found</h2>
+    <p class="muted">We couldn't find that page.</p>
+    <p><a href="#/" @click.prevent="router.push('/')">Go home</a></p>
+  </div>
+</template>

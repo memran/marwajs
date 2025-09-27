@@ -5,12 +5,12 @@
       <span class="muted">tiny • fast • signals</span>
     </div>
     <nav class="links">
-      <RouterLink to="#/">Home</RouterLink>
-      <RouterLink to="#/about"></RouterLink>
+      <a href="#/">Home</a>
+      <a href="#/about"></a>
         About
-      </RouterLink>
-      <RouterLink to="https://github.com/memran/marwajs" target="_blank"
-        > GitHub ↗</RouterLink
+    </a>
+      <a href="https://github.com/memran/marwajs" target="_blank"
+        > GitHub ↗</a
       >
     </nav>
   </header>

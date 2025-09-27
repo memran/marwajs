@@ -34,83 +34,91 @@
 </button>
 `.trim();
 </script>
+<template>
+  <section style="display: grid; gap: 22px">
+    <div style="display: grid; gap: 18px; text-align: center">
+      <div style="font-size: 14px">
+        <span class="tag">Welcome to</span>
+      </div>
+      <h1 style="margin: 0; font-size: 42px; line-height: 1.1">MarwaJS</h1>
+      <p
+        class="muted"
+        style="margin: 0 auto; max-width: 720px; font-size: 16px">
+        A tiny front-end framework with signals, zero-config SFCs, a built-in
+        router, DI, and stores. Focused on small bundles and a great developer
+        experience.
+      </p>
 
-<section style="display: grid; gap: 22px">
-  <div style="display: grid; gap: 18px; text-align: center">
-    <div style="font-size: 14px">
-      <span class="tag">Welcome to</span>
-    </div>
-    <h1 style="margin: 0; font-size: 42px; line-height: 1.1">MarwaJS</h1>
-    <p class="muted" style="margin: 0 auto; max-width: 720px; font-size: 16px">
-      A tiny front-end framework with signals, zero-config SFCs, a built-in
-      router, DI, and stores. Focused on small bundles and a great developer
-      experience.
-    </p>
-
-    <div
-      style="
-        display: flex;
-        gap: 12px;
-        justify-content: center;
-        flex-wrap: wrap;
-      ">
-      <button class="btn" @click="router.push('/about')">Learn more →</button>
-      <a
-        class="btn"
+      <div
         style="
-          background: transparent;
-          border: 1px solid rgba(255, 255, 255, 0.18);
-          color: var(--ink);
-        "
-        href="https://github.com/memran/marwajs"
-        target="_blank"
-        >GitHub</a
-      >
+          display: flex;
+          gap: 12px;
+          justify-content: center;
+          flex-wrap: wrap;
+        ">
+        <button class="btn" @click="router.push('/about')">Learn more →</button>
+        <a
+          class="btn"
+          style="
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            color: var(--ink);
+          "
+          href="https://github.com/memran/marwajs"
+          target="_blank"
+          >GitHub</a
+        >
+      </div>
     </div>
-  </div>
 
-  <div class="grid">
-    <div class="feature">
-      <div class="tag">Quick start</div>
-      <pre><code>npx create-marwa my-app
+    <div class="grid">
+      <div class="feature">
+        <div class="tag">Quick start</div>
+        <pre><code>npx create-marwa my-app
 cd my-app
 npm i
 npm run dev</code></pre>
-    </div>
+      </div>
 
-    <div class="feature">
-      <div class="tag">Counter demo</div>
-      <div
-        style="display: flex; align-items: center; gap: 10px; margin-top: 10px">
-        <button class="btn" @click="count.set(count() - 1)">–</button>
+      <div class="feature">
+        <div class="tag">Counter demo</div>
         <div
           style="
-            font-size: 28px;
-            font-weight: 700;
-            min-width: 52px;
-            text-align: center;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
           ">
-          {{ count() }}
+          <button class="btn" @click="count.set(count() - 1)">–</button>
+          <div
+            style="
+              font-size: 28px;
+              font-weight: 700;
+              min-width: 52px;
+              text-align: center;
+            ">
+            {{ count() }}
+          </div>
+          <button class="btn" @click="count.set(count() + 1)">+</button>
         </div>
-        <button class="btn" @click="count.set(count() + 1)">+</button>
+        <p class="muted" style="margin-top: 8px">
+          Signals update instantly with no VDOM.
+        </p>
       </div>
-      <p class="muted" style="margin-top: 8px">
-        Signals update instantly with no VDOM.
-      </p>
-    </div>
 
-    <div class="feature">
-      <div class="tag">SFC snippet</div>
-      <pre><code>{{ snippet }}</code></pre>
-    </div>
+      <div class="feature">
+        <div class="tag">SFC snippet</div>
+        <pre><code>{{ snippet }}</code></pre>
+      </div>
 
-    <div class="feature">
-      <div class="tag">Features</div>
-      <ul style="margin: 10px 0 0 18px; padding: 0">
-        <li m-for="f in features">
-          {{ f.title }} — <span class="muted">{{ f.body }}</span>
-        </li>
-      </ul>
+      <div class="feature">
+        <div class="tag">Features</div>
+        <ul style="margin: 10px 0 0 18px; padding: 0">
+          <li m-for="f in features">
+            {{ f.title }} — <span class="muted">{{ f.body }}</span>
+          </li>
+        </ul>
+      </div>
     </div>
-  </div>
-</section>
+  </section>
+</template>

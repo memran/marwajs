@@ -43,12 +43,16 @@ __setEffectScopeHook((runner) => {
 export function defineComponent<TProps = any>(setup: ComponentSetup<TProps>) {
   return function create(
     props: TProps,
-    ctx: Omit<ComponentContext, "emit"> & { app: import("./app").App }
+    // 🔧 make ctx optional to avoid crashes in tests or direct usage
+    ctxArg?: Omit<ComponentContext, "emit"> & { app: import("./app").App }
   ): ComponentHooks<TProps> {
+    // 🔧 normalize ctx; provide minimal shape when omitted
+    const baseCtx = ctxArg ?? ({ app: undefined as any } as const);
+
     const parent = currentInstance;
     const instance: ComponentInstance = {
       parent,
-      app: ctx.app,
+      app: baseCtx.app, // safe now
       isMounted: false,
       provides: Object.create(parent?.provides || null),
       mountCbs: [],
@@ -75,7 +79,8 @@ export function defineComponent<TProps = any>(setup: ComponentSetup<TProps>) {
         h(...args);
       }
     };
-    const childCtx: ComponentContext = { ...(ctx as any), emit };
+    // 🔧 build child ctx from normalized baseCtx
+    const childCtx: ComponentContext = { ...(baseCtx as any), emit };
 
     // Run setup with this instance as current to capture effects
     currentInstance = instance;
@@ -85,7 +90,7 @@ export function defineComponent<TProps = any>(setup: ComponentSetup<TProps>) {
     const wrapped: ComponentHooks<TProps> = {
       mount(target, anchor) {
         currentInstance = instance;
-        hooks.mount(target, anchor);
+        hooks.mount(target, anchor ?? null);
         instance.isMounted = true;
         for (const cb of instance.mountCbs) {
           try {

@@ -1,4 +1,5 @@
 <template>
+  <h2>Welcome Pages</h2>
   <main class="wrap">
     <!-- Background decorations -->
     <div class="bg">
@@ -6,111 +7,94 @@
       <div class="blob b2" aria-hidden="true"></div>
       <div class="grid" aria-hidden="true"></div>
     </div>
-
-    <!-- Header / brand -->
-    <header class="header">
-      <div class="brand">
-        <span class="logo">MW</span>
-        <div class="titles">
-          <h1>MarwaJS</h1>
-          <p class="subtitle">Tiny • Fast • DX‑first</p>
-        </div>
+  </main>
+  <!-- Header / brand -->
+  <header class="header">
+    <div class="brand">
+      <span class="logo">MW</span>
+      <div class="titles">
+        <h1>MarwaJS</h1>
+        <p class="subtitle">Tiny • Fast • DX‑first</p>
       </div>
-      <nav class="links">
-        <a
-          class="link"
-          href="https://github.com/memran"
-          target="_blank"
-          rel="noopener"
-          >GitHub</a
-        >
-        <a
-          class="link"
-          href="https://npmjs.com/org/marwajs"
-          target="_blank"
-          rel="noopener"
-          >NPM</a
-        >
-        <a
-          class="link"
-          href="https://example.com/docs"
-          target="_blank"
-          rel="noopener"
-          >Docs</a
-        >
-      </nav>
-    </header>
-
-    <!-- Hero -->
-    <section class="hero card">
-      <h2>Welcome 👋</h2>
+    </div>
+    <nav class="links">
+      <a
+        class="link"
+        href="https://github.com/memran"
+        target="_blank"
+        rel="noopener"
+        >GitHub</a
+      >
+      <a
+        class="link"
+        href="https://npmjs.com/org/marwajs"
+        target="_blank"
+        rel="noopener"
+        >NPM</a
+      >
+      <a
+        class="link"
+        href="https://example.com/docs"
+        target="_blank"
+        rel="noopener"
+        >Docs</a
+      >
+    </nav>
+  </header>
+  <!-- Hero -->
+  <section class="hero card">
+    <h2>Welcome 👋</h2>
+  </section>
+  <!-- Quick start tiles -->
+  <section class="tiles">
+    <article class="tile card">
+      <h3>Create a page</h3>
       <p>
-        You're running the <strong>MarwaJS dev server</strong>. Build snappy
-        apps with <em>signals</em>, single‑file <code>.marwa</code> components,
-        and a tiny runtime.
+        Add <code>src/pages/Hello.marwa</code> and register in
+        <code>router.ts</code>.
       </p>
-      <div class="cta">
-        <RouterLink class="btn primary" to="/about"
-          >Open sample page</RouterLink
-        >
-        <a class="btn ghost" href="/play">Try playground</a>
-      </div>
-      <p class="hint">
-        Tip: Edit <code>src/pages/Welcome.marwa</code> and save — hot reload
-        will do the rest.
-      </p>
-    </section>
-
-    <!-- Quick start tiles -->
-    <section class="tiles">
-      <article class="tile card">
-        <h3>Create a page</h3>
-        <p>
-          Add <code>src/pages/Hello.marwa</code> and register in
-          <code>router.ts</code>.
-        </p>
-        <pre><code>defineRoutes([
+      <pre><code>defineRoutes([
   { path: '/', component: () => import('./pages/Welcome.marwa') },
   { path: '/hello', component: () => import('./pages/Hello.marwa') },
   { path: '*', component: () => import('./pages/NotFound.marwa') },
 ])</code></pre>
-      </article>
+    </article>
 
-      <article class="tile card">
-        <h3>Use signals</h3>
-        <p>State is simple and fast.</p>
-        <pre><code>import { signal } from '@marwajs/core'
+    <article class="tile card">
+      <h3>Use signals</h3>
+      <p>State is simple and fast.</p>
+      <pre><code>import { signal } from '@marwajs/core'
 const count = signal(0)
 &lt;button @click="count.set(count()+1)"&gt;{{ count() }}&lt;/button&gt;</code></pre>
-      </article>
+    </article>
 
-      <article class="tile card">
-        <h3>Link &amp; Layouts</h3>
-        <p>
-          <code>&lt;RouterLink/&gt;</code> for SPA links and
-          <code>&lt;RouterView/&gt;</code> for nested layouts.
-        </p>
-        <pre><code>&lt;RouterLink to="/hello"&gt;Say hi&lt;/RouterLink&gt;
+    <article class="tile card">
+      <h3>Link &amp; Layouts</h3>
+      <p>
+        <code>&lt;RouterLink/&gt;</code> for SPA links and
+        <code>&lt;RouterView/&gt;</code> for nested layouts.
+      </p>
+      <pre><code>&lt;RouterLink to="/hello"&gt;Say hi&lt;/RouterLink&gt;
 &lt;RouterView/&gt;</code></pre>
-      </article>
+    </article>
 
-      <article class="tile card">
-        <h3>Directives</h3>
-        <p>Minimal directive set for common cases.</p>
-        <ul class="list">
-          <li><code>:text</code> / <code>:html</code> — bind content</li>
-          <li><code>:show</code> — toggle visibility</li>
-          <li><code>:class</code> / <code>:style</code> — style reactively</li>
-          <li><code>m-model</code> — two‑way inputs</li>
-          <li><code>@click</code> — events (with modifiers)</li>
-        </ul>
-      </article>
-    </section>
+    <article class="tile card">
+      <h3>Directives</h3>
+      <p>Minimal directive set for common cases.</p>
+      <ul class="list">
+        <li><code>:text</code> / <code>:html</code> — bind content</li>
+        <li><code>:show</code> — toggle visibility</li>
+        <li><code>:class</code> / <code>:style</code> — style reactively</li>
+        <li><code>m-model</code> — two‑way inputs</li>
+        <li><code>@click</code> — events (with modifiers)</li>
+      </ul>
+    </article>
+  </section>
 
-    <!-- Project scaffold -->
-    <section class="structure card">
-      <h3>Project structure</h3>
-      <pre><code>src/
+  <!-- Project scaffold -->
+  <section class="structure card">
+    <h3>Project structure</h3>
+    <pre><code>src/
   App.marwa        # root shell (has &lt;RouterView/&gt;)
   router.ts        # createRouter(defineRoutes([...]))
   pages/
@@ -124,23 +108,16 @@ const count = signal(0)
 public/
   favicon.svg
       </code></pre>
-    </section>
+  </section>
 
-    <!-- Footer tips -->
-    <footer class="footer">
-      <div class="kbd">
-        <span>⌘/Ctrl</span> + <span>S</span> — Save &amp; hot reload
-      </div>
-      <div class="note">Made with ❤️ for tiny bundles. Enjoy the flow.</div>
-    </footer>
-  </main>
+  <!-- Footer tips -->
+  <footer class="footer">
+    <div class="kbd">
+      <span>⌘/Ctrl</span> + <span>S</span> — Save &amp; hot reload
+    </div>
+    <div class="note">Made with ❤️ for tiny bundles. Enjoy the flow.</div>
+  </footer>
 </template>
-
-<script setup>
-  // Nothing heavy here — keep the welcome screen zero‑logic for tiny bundles.
-  // RouterLink is globally available in MarwaJS builds; uncomment if your setup needs explicit import.
-  // import { RouterLink } from '@marwajs/core'
-</script>
 
 <style scoped>
   :root {
@@ -178,7 +155,6 @@ public/
     margin: 0 auto;
     display: grid;
     gap: 20px;
-    grid-template-rows: auto auto auto 1fr auto;
   }
 
   /* Decorative background */
