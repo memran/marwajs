@@ -1,0 +1,20 @@
+<template>
+  <header class="nav">
+    <div style="display: flex; gap: 10px; align-items: center">
+      <div class="tag">MarwaJS</div>
+      <span class="muted">tiny • fast • signals</span>
+    </div>
+    <nav class="links">
+      <RouterLink to="#/">Home</RouterLink>
+      <RouterLink to="#/about"></RouterLink>
+        About
+      </RouterLink>
+      <RouterLink to="https://github.com/memran/marwajs" target="_blank"
+        > GitHub ↗</RouterLink
+      >
+    </nav>
+  </header>
+</template>
+<script>
+  import { router } from "../router";
+</script>

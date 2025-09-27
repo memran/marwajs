@@ -1,0 +1,24 @@
+<script>
+  import { router } from "../router";
+</script>
+
+<h2 style="margin: 0 0 12px">About MarwaJS</h2>
+<p class="muted">
+  MarwaJS focuses on a tiny, stable API surface and predictable performance. It
+  embraces signals, minimal abstractions, and a compiler that emits small,
+  direct DOM ops.
+</p>
+
+<ul style="margin: 10px 0 0 18px">
+  <li>Signals-first reactivity</li>
+  <li>Zero-config SFCs (<code>.marwa</code>)</li>
+  <li>
+    Built-in directives (<code>m-if</code>, <code>m-for</code>,
+    <code>m-model</code>…)
+  </li>
+  <li>Simple router with lazy routes</li>
+</ul>
+
+<p style="margin-top: 16px">
+  <a href="#/" @click.prevent="router.push('/')">← Back home</a>
+</p>

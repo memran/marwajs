@@ -1,0 +1,21 @@
+<template>
+  <div class="container">
+    <div class="card" style="padding: 14px 18px; margin-bottom: 18px">
+      <Nav />
+    </div>
+
+    <!-- Render matched page -->
+    <div class="card ring" style="padding: 22px">
+      <div m-mount="RouterView(router)"></div>
+    </div>
+
+    <footer class="muted" style="margin-top: 18px; font-size: 13px">
+      © <span>{{ new Date().getFullYear() }}</span> MarwaJS • Built with signals
+      & love.
+    </footer>
+  </div>
+</template>
+<script>
+  import { RouterView } from "@marwajs/core";
+  import Nav from "./components/Nav.marwa";
+</script>
