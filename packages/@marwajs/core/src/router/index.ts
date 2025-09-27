@@ -306,7 +306,8 @@ function pathToRegex(path: string): { re: RegExp; keys: string[] } {
   return { re: new RegExp(full), keys };
 }
 
-function ensureLeadingSlash(p: string) {
+function ensureLeadingSlash(p: string): string {
+  if (typeof p !== "string") p = "/";
   return p.startsWith("/") ? p : "/" + p;
 }
 

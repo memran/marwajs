@@ -1,9 +1,10 @@
 <template>
   <h1>Welcome to MarwaJS!</h1>
-  <Welcome />
+
+  <Nav />
 </template>
 <script>
-  // import { RouterView, RouterLink } from "@marwajs/core";
-  // import Nav from "./components/Nav.marwa";
-  import Welcome from "./pages/Welcome.marwa";
+  //import { RouterView } from "@marwajs/core";
+  import Nav from "./components/Nav.marwa";
+  //import Welcome from "./pages/Welcome.marwa";
 </script>

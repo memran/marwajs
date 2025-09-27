@@ -6,15 +6,39 @@
     </div>
     <nav class="links">
       <a href="#/">Home</a>
-      <a href="#/about"></a>
-        About
-    </a>
-      <a href="https://github.com/memran/marwajs" target="_blank"
-        > GitHub ↗</a
-      >
+      <a href="#/about"> About </a>
+      <a href="https://github.com/memran/marwajs" target="_blank"> GitHub ↗</a>
     </nav>
   </header>
+  <div>
+    <p>Counter in Nav: {{ count() }}</p>
+    <button class="btn" @click="inc()">+</button>
+    <button class="btn" @click="dec()">-</button>
+  </div>
 </template>
 <script>
   import { router } from "../router";
+  import { signal } from "@marwajs/core";
+
+  const count = signal(0);
+  function inc() {
+    count.set(count() + 1);
+  }
+  function dec() {
+    count.set(count() - 1);
+  }
 </script>
+
+<style scoped>
+  .btn {
+    padding: 6px 12px;
+    border: none;
+    background: #0077ff;
+    color: white;
+    border-radius: 4px;
+    cursor: pointer;
+    width: 48px;
+    height: 32px;
+    margin: 4px;
+  }
+</style>
