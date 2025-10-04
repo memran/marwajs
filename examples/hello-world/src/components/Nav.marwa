@@ -1,44 +1,18 @@
 <template>
   <header class="nav">
     <div style="display: flex; gap: 10px; align-items: center">
-      <div class="tag">MarwaJS</div>
+      <div class="tag">{{ title.value }}</div>
       <span class="muted">tiny • fast • signals</span>
     </div>
     <nav class="links">
-      <a href="#/">Home</a>
-      <a href="#/about"> About </a>
+      <RouterLink to="/">Home</RouterLink>
+      <RouterLink to="/about"> About </RouterLink>
+      <RouterLink>About</RouterLink>
       <a href="https://github.com/memran/marwajs" target="_blank"> GitHub ↗</a>
     </nav>
   </header>
-  <div>
-    <p>Counter in Nav: {{ count() }}</p>
-    <button class="btn" @click="inc()">+</button>
-    <button class="btn" @click="dec()">-</button>
-  </div>
 </template>
 <script>
-  import { router } from "../router";
-  import { signal } from "@marwajs/core";
-
-  const count = signal(0);
-  function inc() {
-    count.set(count() + 1);
-  }
-  function dec() {
-    count.set(count() - 1);
-  }
+  import { ref } from "@marwajs/core";
+  const title = ref("MarwaJS!");
 </script>
-
-<style scoped>
-  .btn {
-    padding: 6px 12px;
-    border: none;
-    background: #0077ff;
-    color: white;
-    border-radius: 4px;
-    cursor: pointer;
-    width: 48px;
-    height: 32px;
-    margin: 4px;
-  }
-</style>

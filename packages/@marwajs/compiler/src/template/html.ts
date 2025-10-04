@@ -1,3 +1,4 @@
+// packages/@marwajs/compiler/src/template/html.ts
 import type { Node } from "./types.js";
 
 export function isVoid(tag: string) {
@@ -7,8 +8,14 @@ export function isVoid(tag: string) {
 }
 
 export function parseHTML(src: string): Node[] {
+  // Strip comments + doctype ONLY; keep original whitespace treatment
+  const cleaned = src
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<!DOCTYPE[^>]*>/gi, "");
+
   const re = /<\/?([A-Za-z][\w-]*)([^>]*)>|([^<]+)/g;
   const attrRe = /([:@.\w-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>=]+)))?/g;
+
   const stack: Node[] = [];
   const roots: Node[] = [];
 
@@ -19,9 +26,10 @@ export function parseHTML(src: string): Node[] {
   }
 
   let m: RegExpExecArray | null;
-  while ((m = re.exec(src))) {
+  while ((m = re.exec(cleaned))) {
     if (m[3]) {
       const txt = m[3];
+      // Keep EXACT old behavior: drop whitespace-only nodes
       if (txt && txt.trim() !== "") push({ type: "text", value: txt });
       continue;
     }

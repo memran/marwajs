@@ -2,27 +2,96 @@ import { effect, stop } from "../reactivity/effect";
 import type { App } from "./app";
 import * as Dom from "./dom";
 
+/* =========================
+   Internal helpers (DRY)
+   ========================= */
+
+function asNode(el: any): Node | null {
+  // Accept real nodes or element-like objects (for jsdom)
+  if (!el) return null;
+  if (typeof el === "object") {
+    if ("nodeType" in el || "isConnected" in el) return el as Node;
+    if (typeof (el as any).addEventListener === "function") return el as Node;
+  }
+  return null;
+}
+
+/** Wrap a reactive effect with try/catch + stable disposer. */
+function makeEffect<T>(
+  name: string,
+  run: () => void,
+  onError?: (err: unknown) => void
+): () => void {
+  let runner: any;
+  try {
+    runner = effect(() => {
+      try {
+        run();
+      } catch (e) {
+        // Surface runtime error with directive name for quick pinpointing
+        console.error(`[${name}] runtime error in effect:`, e);
+        onError?.(e);
+      }
+    });
+  } catch (e) {
+    console.error(`[${name}] failed to start effect:`, e);
+    return () => {};
+  }
+  return () => {
+    try {
+      stop(runner);
+    } catch (e) {
+      console.error(`[${name}] failed to stop effect:`, e);
+    }
+  };
+}
+
+/** Safely run a one-off update with error surfacing. */
+function runOnce(name: string, fn: () => void) {
+  try {
+    fn();
+  } catch (e) {
+    console.error(`[${name}] initial run error:`, e);
+  }
+}
+
+/** Whether we can use delegated events via App. */
+function canDelegate(app: App | any): boolean {
+  return !!(
+    app &&
+    typeof app.on === "function" &&
+    app.container &&
+    typeof app.container.isConnected === "boolean" &&
+    app.container.isConnected
+  );
+}
+
+/* =========================
+   Public API (unchanged)
+   ========================= */
+
 /** :text */
 export function bindText(target: Node, compute: () => any): () => void {
-  Dom.setText(target, toStringSafe(compute())); // eager first write
-  const runner = effect(() => {
-    Dom.setText(target, toStringSafe(compute()));
+  const el = asNode(target);
+  if (!el) return () => {};
+  runOnce("bindText", () => Dom.setText(el, toStringSafe(compute())));
+  return makeEffect("bindText", () => {
+    Dom.setText(el, toStringSafe(compute()));
   });
-  return () => stop(runner);
 }
-/** :attr (generic attribute binding, e.g. :id, :src, :aria-label) */
 
+/** :attr (generic attribute binding, e.g. :id, :src, :aria-label) */
 export function bindAttr(
   el: HTMLElement,
   name: string,
   compute: () => unknown
 ): () => void {
-  // eager first write for deterministic content
-  Dom.setAttr(el, name, compute() as any);
-  const runner = effect(() => {
-    Dom.setAttr(el, name, compute() as any);
+  const n = asNode(el) as HTMLElement | null;
+  if (!n) return () => {};
+  runOnce("bindAttr", () => Dom.setAttr(n, name, compute() as any));
+  return makeEffect("bindAttr", () => {
+    Dom.setAttr(n, name, compute() as any);
   });
-  return () => stop(runner);
 }
 
 /** :html */
@@ -31,19 +100,21 @@ export function bindHTML(
   compute: () => string,
   sanitize?: (html: string) => string
 ): () => void {
-  const runner = effect(() => {
+  const n = asNode(el) as HTMLElement | null;
+  if (!n) return () => {};
+  return makeEffect("bindHTML", () => {
     const raw = compute() ?? "";
-    el.innerHTML = sanitize ? sanitize(String(raw)) : String(raw);
+    n.innerHTML = sanitize ? sanitize(String(raw)) : String(raw);
   });
-  return () => stop(runner);
 }
 
 /** :show */
 export function bindShow(el: HTMLElement, compute: () => boolean): () => void {
-  const runner = effect(() => {
-    Dom.show(el, !!compute());
+  const n = asNode(el) as HTMLElement | null;
+  if (!n) return () => {};
+  return makeEffect("bindShow", () => {
+    Dom.show(n, !!compute());
   });
-  return () => stop(runner);
 }
 
 /** :class */
@@ -51,10 +122,11 @@ export function bindClass(
   el: HTMLElement,
   compute: () => string | Record<string, boolean>
 ): () => void {
-  const runner = effect(() => {
-    Dom.setClass(el, compute() as any);
+  const n = asNode(el) as HTMLElement | null;
+  if (!n) return () => {};
+  return makeEffect("bindClass", () => {
+    Dom.setClass(n, compute() as any);
   });
-  return () => stop(runner);
 }
 
 /** :style */
@@ -62,24 +134,40 @@ export function bindStyle(
   el: HTMLElement,
   compute: () => Record<string, string | null | undefined>
 ): () => void {
-  const runner = effect(() => {
-    Dom.setStyle(el, compute() || {});
+  const n = asNode(el) as HTMLElement | null;
+  if (!n) return () => {};
+  return makeEffect("bindStyle", () => {
+    Dom.setStyle(n, compute() || {});
   });
-  return () => stop(runner);
 }
 
-/** Event wiring via App-level delegation */
+/** Event wiring via App-level delegation (fallback to direct listener) */
 export function on(
-  app: App,
+  app: App | any,
   el: HTMLElement,
   type: string,
   handler: (e: Event) => void
 ): () => void {
-  if (!("isConnected" in app.container) || !app.container.isConnected) {
-    el.addEventListener(type, handler);
-    return () => el.removeEventListener(type, handler);
+  const n = asNode(el) as HTMLElement | null;
+  if (!n) return () => {};
+
+  try {
+    if (canDelegate(app)) {
+      // Delegate via app (bubbling)
+      return app.on(type, n, handler);
+    }
+  } catch (e) {
+    console.error(`[on] app.on failed, falling back to direct listener:`, e);
+    // fall through to direct listener
   }
-  return app.on(type, el, handler);
+
+  try {
+    n.addEventListener(type, handler);
+    return () => n.removeEventListener(type, handler);
+  } catch (e) {
+    console.error(`[on] addEventListener failed:`, e);
+    return () => {};
+  }
 }
 
 /** Event modifiers helper (compiler wraps handlers with this) */
@@ -89,21 +177,19 @@ export function withModifiers(
 ) {
   let fired = false; // for "once"
   return function (e: Event) {
-    if (mods.includes("self") && e.target !== e.currentTarget) return;
-    if (mods.includes("once")) {
-      if (fired) return;
-      fired = true;
+    try {
+      if (mods.includes("self") && e.target !== e.currentTarget) return;
+      if (mods.includes("once")) {
+        if (fired) return;
+        fired = true;
+      }
+      // "capture" and "passive" are documented as no-ops in delegated model
+      if (mods.includes("prevent")) e.preventDefault();
+      if (mods.includes("stop")) e.stopPropagation();
+      return handler(e);
+    } catch (err) {
+      console.error(`[withModifiers] handler error:`, err);
     }
-    if (mods.includes("capture")) {
-      // Delegation runs in bubble phase; capture is a no-op here (documented).
-      // Compiler can choose native capture by adding a root listener if needed.
-    }
-    if (mods.includes("passive")) {
-      // Not applicable in delegated model; document as no-op.
-    }
-    if (mods.includes("prevent")) e.preventDefault();
-    if (mods.includes("stop")) e.stopPropagation();
-    return handler(e);
   };
 }
 
@@ -113,7 +199,7 @@ export interface ModelOptions {
   trim?: boolean;
   number?: boolean;
   type?: "text" | "checkbox" | "radio" | "select";
-  debounce?: number; // ← ms; only used for text/textarea on "input" events
+  debounce?: number; // ms (only for input/textarea on "input")
 }
 
 export function bindModel(
@@ -123,24 +209,31 @@ export function bindModel(
   set: (v: any) => void,
   opts: ModelOptions = {}
 ): () => void {
+  const n = asNode(el) as
+    | HTMLInputElement
+    | HTMLTextAreaElement
+    | HTMLSelectElement
+    | null;
+  if (!n) return () => {};
+
   const type =
     opts.type ||
-    (el instanceof HTMLInputElement
-      ? (el.type as ModelOptions["type"])
-      : (el.tagName.toLowerCase() as ModelOptions["type"]));
+    (n instanceof HTMLInputElement
+      ? (n.type as ModelOptions["type"])
+      : (n.tagName.toLowerCase() as ModelOptions["type"]));
 
   // 1) view <- model
-  const stopView = effect(() => {
+  const stopView = makeEffect("bindModel(view<-model)", () => {
     const v = get();
     if (type === "checkbox") {
-      (el as HTMLInputElement).checked = !!v;
+      (n as HTMLInputElement).checked = !!v;
     } else if (type === "radio") {
-      (el as HTMLInputElement).checked =
-        String(v) === (el as HTMLInputElement).value;
+      (n as HTMLInputElement).checked =
+        String(v) === (n as HTMLInputElement).value;
     } else if (type === "select") {
-      (el as HTMLSelectElement).value = v == null ? "" : String(v);
+      (n as HTMLSelectElement).value = v == null ? "" : String(v);
     } else {
-      (el as HTMLInputElement | HTMLTextAreaElement).value =
+      (n as HTMLInputElement | HTMLTextAreaElement).value =
         v == null ? "" : String(v);
     }
   });
@@ -148,52 +241,72 @@ export function bindModel(
   // 2) model <- view
   const isFormChange =
     type === "checkbox" || type === "radio" || type === "select";
-  //const isInputLike = !isFormChange && type !== "select";
   const isInputLike = !isFormChange;
-
   const evt = isFormChange ? "change" : opts.lazy ? "change" : "input";
 
-  // Debounced setter (only for input/textarea on "input" events)
   let timer: any = null;
   const useDebounce =
     isInputLike &&
     evt === "input" &&
     typeof opts.debounce === "number" &&
     opts.debounce > 0;
+
   const applySet = (v: any) => {
     if (!useDebounce) {
-      set(v);
+      try {
+        set(v);
+      } catch (e) {
+        console.error(`[bindModel(model<-view)] setter error:`, e);
+      }
       return;
     }
     clearTimeout(timer);
-    timer = setTimeout(() => set(v), opts.debounce);
+    timer = setTimeout(() => {
+      try {
+        set(v);
+      } catch (e) {
+        console.error(`[bindModel(model<-view)] debounced setter error:`, e);
+      }
+    }, opts.debounce);
   };
 
-  const off = on(app, el as HTMLElement, evt, () => {
-    let v: any;
-    if (type === "checkbox") {
-      v = (el as HTMLInputElement).checked;
-    } else if (type === "radio") {
-      if ((el as HTMLInputElement).checked) v = (el as HTMLInputElement).value;
-      else return;
-    } else if (type === "select") {
-      v = (el as HTMLSelectElement).value;
-    } else {
-      v = (el as HTMLInputElement | HTMLTextAreaElement).value;
-      if (opts.trim && typeof v === "string") v = v.trim();
-      if (opts.number) {
-        const n = parseFloat(v);
-        if (!Number.isNaN(n)) v = n;
+  const off = on(app as any, n as HTMLElement, evt, () => {
+    try {
+      let v: any;
+      if (type === "checkbox") {
+        v = (n as HTMLInputElement).checked;
+      } else if (type === "radio") {
+        if ((n as HTMLInputElement).checked) v = (n as HTMLInputElement).value;
+        else return;
+      } else if (type === "select") {
+        v = (n as HTMLSelectElement).value;
+      } else {
+        v = (n as HTMLInputElement | HTMLTextAreaElement).value;
+        if (opts.trim && typeof v === "string") v = v.trim();
+        if (opts.number) {
+          const num = parseFloat(v);
+          if (!Number.isNaN(num)) v = num;
+        }
       }
+      applySet(v);
+    } catch (e) {
+      console.error(`[bindModel] event handler error:`, e);
     }
-    applySet(v);
   });
 
   return () => {
-    off();
-    stop(stopView);
+    try {
+      off();
+    } catch (e) {
+      console.error(`[bindModel] off() error:`, e);
+    }
+    try {
+      stopView();
+    } catch (e) {
+      console.error(`[bindModel] stopView() error:`, e);
+    }
     if (timer) {
-      clearTimeout(timer); // clean pending debounce
+      clearTimeout(timer);
       timer = null;
     }
   };

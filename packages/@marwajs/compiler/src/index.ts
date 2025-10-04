@@ -25,3 +25,4 @@
 // }
 
 export { compileSFC } from "./sfc/compileSFC.js";
+export { compileTemplateToIR } from "./template/compile.js";
