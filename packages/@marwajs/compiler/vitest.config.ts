@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     environment: "happy-dom",
     globals: true,
-    include: ["tests/**/*.ts"],
-    exclude: ["tests/helpers.ts"],
+    include: ["tests/**/*.spec.ts"],
+    exclude: ["tests/helpers.ts", "/tests/runtime/*.ts"],
   },
 });
