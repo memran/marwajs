@@ -1,154 +1,73 @@
-import type { ComponentIR, Binding } from "./ir.js";
+import type { ComponentIR, Binding } from "./ir";
+import { CompilerError } from "./errors";
 
-// Keep this minimal; we’ll add selectively based on bindings
-const BASE_IMPORTS = new Set(["defineComponent"]);
+export function generateComponent(ir: ComponentIR): string {
+  if (!ir) throw new CompilerError("IR must not be null or undefined.");
 
-export function generateComponent(
-  ir: ComponentIR & { imports?: string[]; prelude?: string[] }
-) {
-  const used = new Set<string>(BASE_IMPORTS);
+  const imports = ir.imports.length
+    ? `import { ${ir.imports.join(", ")} } from '@marwajs/core';`
+    : `import { Dom } from '@marwajs/core';`;
 
-  // Always import Dom namespace (compiler targets it)
-  used.add("Dom");
+  const create = ir.create.join("\n  ");
+  const mount = ir.mount.join("\n      ");
+  const binds = emitBindings(ir.bindings);
 
-  // 1) Add extras requested explicitly (e.g., bindIf from :if compiler)
-  for (const extra of ir.imports ?? []) used.add(extra);
+  return `
+${imports}
 
-  // 2) Collect imports by binding usage (text/style/model/event etc.)
-  for (const b of ir.bindings) {
-    collectRuntimeForBinding(b, used);
-    if (b.kind === "event" && /\bwithModifiers\s*\(/.test(b.handler)) {
-      used.add("withModifiers");
-    }
-  }
-
-  // 3) Scan free-form code sections (create/mount/destroy/prelude) for helpers
-  //    This captures helpers used by inline block factories (e.g., bindIf, bindText inside :if branches).
-  const blob = [
-    joinLines(ir.create),
-    joinLines(ir.mount),
-    joinLines(ir.destroy ?? []),
-    joinLines(ir.prelude),
-  ].join("\n");
-
-  const maybe = (name: string) => {
-    if (new RegExp(`\\b${name}\\s*\\(`).test(blob)) used.add(name);
-  };
-
-  // Helper names we might emit outside of ir.bindings
-  [
-    "bindIf",
-    "bindFor",
-    "bindSwitch",
-    "bindText",
-    "bindHTML",
-    "bindShow",
-    "bindClass",
-    "bindStyle",
-    "bindModel",
-    "bindAttr",
-    "onEvent",
-    "withModifiers",
-  ].forEach(maybe);
-
-  // Build the import statement (Dom is a named export from core)
-  const importList = Array.from(used).sort().join(", ");
-
-  const code = `
-import { ${importList} } from '@marwajs/core';
-
-export default defineComponent((props, ctx) => {
-  const __stops = [];
-
-  ${joinLines(ir.prelude)}
-
-  // === create ===
-  ${joinLines(ir.create)}
-
+export default function ${safe(ir.name)}(props: any, ctx: any){
+  const __stops: Array<() => void> = [];
+  ${create}
   return {
-    mount(target, anchor) {
-      // === mount ===
-      ${joinLines(ir.mount)}
-      // === bindings ===
-      ${ir.bindings.map((b) => emitBinding(b)).join("\n")}
+    mount(target: Node, anchor?: Node | null){
+      ${mount}
+      ${binds}
     },
-    destroy() {
-      for (let i = __stops.length - 1; i >= 0; i--) {
-        try { __stops[i](); } catch {}
-      }
-      __stops.length = 0;
-      ${joinLines(ir.destroy ?? [])}
-    }
+    patch() {},
+    destroy(){ for(let i=__stops.length-1;i>=0;i--){ try{__stops[i]();}catch{} } }
   };
-});
-`.trim();
-
-  return { code };
+}
+`;
 }
 
-function collectRuntimeForBinding(b: Binding, used: Set<string>) {
-  switch (b.kind) {
-    case "text":
-      used.add("bindText");
-      break;
-    case "html":
-      used.add("bindHTML");
-      break;
-    case "show":
-      used.add("bindShow");
-      break;
-    case "class":
-      used.add("bindClass");
-      break;
-    case "style":
-      used.add("bindStyle");
-      break;
-    case "model":
-      used.add("bindModel");
-      break;
-    case "attr":
-      used.add("bindAttr");
-      break;
-    case "event":
-      used.add("onEvent");
-      break;
-  }
-  if (b.kind === "event" && /\bwithModifiers\s*\(/.test(b.handler)) {
-    used.add("withModifiers");
-  }
-  used.add("Dom");
-  used.add("defineComponent");
+function safe(n: string) {
+  if (!n) throw new CompilerError("Component name must not be empty.");
+  return n.replace(/[^A-Za-z0-9_$]/g, "_");
 }
 
-function emitBinding(b: Binding): string {
-  switch (b.kind) {
-    case "text":
-      return `__stops.push(bindText(${b.target}, () => (${b.expr})));`;
-    case "html":
-      return `__stops.push(bindHTML(${b.target}, () => (${b.expr})));`;
-    case "show":
-      return `__stops.push(bindShow(${b.target}, () => !!(${b.expr})));`;
-    case "class":
-      return `__stops.push(bindClass(${b.target}, () => (${b.expr})));`;
-    case "style":
-      return `__stops.push(bindStyle(${b.target}, () => (${b.expr})));`;
-    case "attr":
-      return `__stops.push(bindAttr(${b.target}, ${JSON.stringify(
-        b.name
-      )}, () => (${b.expr})));`;
-    case "model": {
-      const opts = b.options ? JSON.stringify(b.options) : "{}";
-      const setter = b.set?.replace(/\$_/g, "v") ?? "v => {}";
-      return `__stops.push(bindModel(ctx.app, ${b.target}, () => (${b.get}), (v) => (${setter}), ${opts}));`;
+function emitBindings(bs: Binding[]): string {
+  const out: string[] = [];
+  for (const b of bs) {
+    switch (b.kind) {
+      case "text":
+        out.push(`__stops.push(bindText(${b.target}, ()=>(${b.expr})));`);
+        break;
+      case "class":
+        out.push(`__stops.push(bindClass(${b.target}, ()=>(${b.expr})));`);
+        break;
+      case "style":
+        out.push(`__stops.push(bindStyle(${b.target}, ()=>(${b.expr})));`);
+        break;
+      case "show":
+        out.push(`__stops.push(bindShow(${b.target}, ()=>!!(${b.expr})));`);
+        break;
+      case "attr":
+        out.push(
+          `__stops.push(bindAttr(${b.target}, ${JSON.stringify(b.name)}, ()=>(${
+            b.expr
+          })));`
+        );
+        break;
+      case "event":
+        out.push(
+          `__stops.push(onEvent((ctx as any).app, ${b.target}, ${JSON.stringify(
+            b.type
+          )}, (${b.handler})));`
+        );
+        break;
+      default:
+        throw new CompilerError(`Unknown binding kind: ${(b as any).kind}`);
     }
-    case "event":
-      return `__stops.push(onEvent(ctx.app, ${b.target}, ${JSON.stringify(
-        b.type
-      )}, ${b.handler}));`;
   }
-  return "";
-}
-
-function joinLines(lines?: string[]) {
-  return (lines ?? []).join("\n");
+  return out.join("\n      ");
 }
