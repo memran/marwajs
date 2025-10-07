@@ -15,3 +15,16 @@ describe("parseEventAttribute", () => {
     expect(() => parseEventAttribute("@")).toThrow(/empty/);
   });
 });
+describe("events: parseEventAttribute — more cases", () => {
+  it("trims event type", () => {
+    expect(parseEventAttribute("@ click ")).toEqual({ type: "click" });
+  });
+
+  it("rejects non-@ names", () => {
+    expect(() => parseEventAttribute("click")).toThrow(CompilerError);
+  });
+
+  it("rejects empty @", () => {
+    expect(() => parseEventAttribute("@")).toThrow(/empty/);
+  });
+});

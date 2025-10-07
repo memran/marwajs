@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { compileTextExpression } from "../src/text";
+import { compileTextExpression, splitTextExpressionParts } from "../src/text";
 import { CompilerError } from "../src/errors";
 
 describe("compileTextExpression", () => {
@@ -20,5 +20,44 @@ describe("compileTextExpression", () => {
     expect(() => compileTextExpression("{{   }}")).toThrow(
       /Empty interpolation/
     );
+  });
+});
+describe("text: splitTextExpressionParts", () => {
+  it("returns static only when no {{}}", () => {
+    expect(splitTextExpressionParts("hello")).toEqual([
+      { kind: "static", value: "hello" },
+    ]);
+  });
+
+  it("splits static + expr + static", () => {
+    const parts = splitTextExpressionParts("Hi {{name}}!");
+    expect(parts).toEqual([
+      { kind: "static", value: "Hi " },
+      { kind: "expr", value: "name" },
+      { kind: "static", value: "!" },
+    ]);
+  });
+
+  it("supports multiple {{}}", () => {
+    const parts = splitTextExpressionParts("A {{x}} B {{y()}} C");
+    expect(parts.map((p) => p.kind)).toEqual([
+      "static",
+      "expr",
+      "static",
+      "expr",
+      "static",
+    ]);
+  });
+
+  it("throws on empty {{ }}", () => {
+    expect(() => splitTextExpressionParts("bad {{   }}")).toThrow(
+      CompilerError
+    );
+  });
+});
+
+describe("text: compileTextExpression (legacy)", () => {
+  it("extracts first expr", () => {
+    expect(compileTextExpression("a {{x}} b {{y}}")).toBe("x");
   });
 });

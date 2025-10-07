@@ -26,3 +26,24 @@ describe("normalizeAttributes", () => {
     expect(normalizeAttributes({ disabled: true })).toEqual({ disabled: "" });
   });
 });
+describe("attrs: normalizeAttributes — more cases", () => {
+  it("coerces numbers/booleans", () => {
+    const out = normalizeAttributes({ tabindex: 2, disabled: true, data: 0 });
+    expect(out).toEqual({ tabindex: "2", disabled: "", data: "0" });
+  });
+
+  it("joins array with spaces", () => {
+    expect(normalizeAttributes({ class: ["a", "b", "c"] })).toEqual({
+      class: "a b c",
+    });
+  });
+
+  it("throws on nullish", () => {
+    expect(() => normalizeAttributes({ x: undefined as any })).toThrow(
+      CompilerError
+    );
+    expect(() => normalizeAttributes({ y: null as any })).toThrow(
+      CompilerError
+    );
+  });
+});

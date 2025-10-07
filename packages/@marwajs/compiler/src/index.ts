@@ -1,6 +1,6 @@
 import { parseHTML } from "./html/parse";
 import { normalizeAttributes } from "./attrs";
-import { compileTextExpression } from "./text";
+import { splitTextExpressionParts } from "./text"; // <- keep old, add new
 import { parseEventAttribute } from "./events";
 import { CompilerError, NullOrUndefinedError } from "./errors";
 import type { TemplateNode, CompileOptions } from "./types";
@@ -32,20 +32,29 @@ export function compileTemplateToIR(
     );
 
   const walk = (n: TemplateNode, parent?: string): string => {
+    // TEXT NODES — now support mixed static + {{ expr }} parts
     if (n.type === "text") {
-      const expr = compileTextExpression(n.value);
-      const t = uid("text");
-      create.push(
-        `const ${t} = Dom.createText(${expr ? "''" : JSON.stringify(n.value)});`
-      );
-      if (parent) insert(t, parent);
-      if (expr) {
-        bindings.push({ kind: "text", target: t, expr });
-        imports.add("bindText");
+      const parts = splitTextExpressionParts(n.value);
+      let last = "";
+      for (const p of parts) {
+        const t = uid("text");
+        if (p.kind === "static") {
+          create.push(
+            `const ${t} = Dom.createText(${JSON.stringify(p.value)});`
+          );
+          if (parent) insert(t, parent);
+        } else {
+          create.push(`const ${t} = Dom.createText('');`);
+          if (parent) insert(t, parent);
+          bindings.push({ kind: "text", target: t, expr: p.value });
+          imports.add("bindText");
+        }
+        last = t;
       }
-      return t;
+      return last;
     }
 
+    // ELEMENT NODES — unchanged
     const el = uid("el");
     create.push(`const ${el} = Dom.createElement(${JSON.stringify(n.tag)});`);
     if (scopeAttr)
@@ -58,6 +67,7 @@ export function compileTemplateToIR(
         throw new NullOrUndefinedError(`Attribute ${k} has nullish value.`);
       if (v == undefined)
         throw new NullOrUndefinedError(`Attribute ${k} has undefined value.`);
+
       if (k === "m-text") {
         const tn = uid("text");
         create.push(`const ${tn} = Dom.createText('');`);
