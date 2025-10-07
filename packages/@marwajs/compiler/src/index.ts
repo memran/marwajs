@@ -134,7 +134,6 @@ export function compileTemplateToIR(
     const localImports = new Set<string>();
     const localId = (p: string) => `__b_${p}${++autoId}`;
 
-    // Insert into the block by targeting __end (everything mounts before __end)
     const localInsert = (childVar: string, parentVar: string) => {
       localMount.push(`Dom.insert(${childVar}, ${parentVar}, __end);`);
     };
@@ -145,22 +144,16 @@ export function compileTemplateToIR(
       if (node.type === "text") {
         const parts = splitTextExpressionParts(node.value);
         for (const part of parts) {
-          const textVar = localId("text");
+          const t = localId("text");
           if (part.kind === "static") {
             localCreate.push(
-              `const ${textVar} = Dom.createText(${JSON.stringify(
-                part.value
-              )});`
+              `const ${t} = Dom.createText(${JSON.stringify(part.value)});`
             );
-            localInsert(textVar, parentVar);
+            localInsert(t, parentVar);
           } else {
-            localCreate.push(`const ${textVar} = Dom.createText('');`);
-            localInsert(textVar, parentVar);
-            localBindings.push({
-              kind: "text",
-              target: textVar,
-              expr: part.value,
-            });
+            localCreate.push(`const ${t} = Dom.createText('');`);
+            localInsert(t, parentVar);
+            localBindings.push({ kind: "text", target: t, expr: part.value });
             localImports.add("bindText");
           }
         }
@@ -184,18 +177,18 @@ export function compileTemplateToIR(
         const value = (attrs as any)[name];
         if (strict && value == null)
           throw new NullOrUndefinedError(
-            `Attribute \${name} has nullish value.`
+            "Attribute ${name} has nullish value."
           );
         if (value === undefined)
           throw new NullOrUndefinedError(
-            `Attribute \${name} has undefined value.`
+            "Attribute ${name} has undefined value."
           );
 
         if (name === "m-text") {
-          const tv = localId("text");
-          localCreate.push(`const ${tv} = Dom.createText('');`);
-          localInsert(tv, el);
-          localBindings.push({ kind: "text", target: tv, expr: value });
+          const t = localId("text");
+          localCreate.push(`const ${t} = Dom.createText('');`);
+          localInsert(t, el);
+          localBindings.push({ kind: "text", target: t, expr: value });
           localImports.add("bindText");
           continue;
         }
@@ -287,37 +280,36 @@ export function compileTemplateToIR(
               b.target
             }, ${JSON.stringify((b as any).type)}, (e)=>(${
               (b as any).handler
-            })) );`;
+            })));`;
           default:
             return "";
         }
       })
       .join("\n");
 
-    // Two-anchored window: [__start ...inserted nodes... __end]
     return `((parent, ${OUTER_ANCHOR})=>{
-  const __stops: Array<()=>void> = [];
-  const ${ROOT} = parent;
-  const __start = Dom.createAnchor('blk-start');
-  const __end   = Dom.createAnchor('blk-end');
-  Dom.insert(__start, ${ROOT}, ${OUTER_ANCHOR});
-  Dom.insert(__end,   ${ROOT}, ${OUTER_ANCHOR});
+    const __stops: Array<()=>void> = [];
+    const ${ROOT} = parent;
+    const __start = Dom.createAnchor('blk-start');
+    const __end   = Dom.createAnchor('blk-end');
+    Dom.insert(__start, ${ROOT}, ${OUTER_ANCHOR});
+    Dom.insert(__end,   ${ROOT}, ${OUTER_ANCHOR});
 ${localCreate.join("\n")}
 ${localMount.join("\n")}
 ${localBindingCode}
-  return ()=> {
-    // Remove all nodes between __start and __end (but not the anchors themselves)
-    let n = __start.nextSibling;
-    while (n && n !== __end) {
-      const next = n.nextSibling;
-      Dom.remove(n);
-      n = next;
-    }
-    for (let i = __stops.length - 1; i >= 0; i--) { try { __stops[i](); } catch {} }
-    Dom.remove(__start);
-    Dom.remove(__end);
-  };
-})`;
+    return ()=> {
+      // Remove everything between __start and __end
+      let n = __start.nextSibling;
+      while (n && n !== __end) {
+        const next = n.nextSibling;
+        Dom.remove(n);
+        n = next;
+      }
+      for (let i = __stops.length - 1; i >= 0; i--) { try { __stops[i](); } catch {} }
+      Dom.remove(__start);
+      Dom.remove(__end);
+    };
+  })`;
   }
 
   function buildSwitchIfElse(
